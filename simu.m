@@ -1,16 +1,16 @@
 clear; clc; close all;
 
 %% Known parameters
-S = 52e-4;          % hydrofoil area of one foil [m^2]
+S = 3e-4;           % hydrofoil area of one foil [m^2] (10 mm chord x 30 mm span)
 N = 4;                  % number of hydrofoils
-rtip = 5e-2;            % tip radius [m]
+rtip = 7e-2;            % tip radius [m]
 m = 70e-3;              % mass [kg]
 rho = 1000;             % water density [kg/m^3]
 g = 9.81;               % gravitational acceleration [m/s^2]
 
 I = 7e-5;               % moment of inertia [kg*m^2], replace with measured value if available
 
-omega0 = 66;            % initial angular velocity [rad/s]
+omega0 = deg2rad(3000); % initial angular velocity [rad/s] (3000 deg/s ~= 52.36 rad/s)
 zdot0 = -3.5;           % initial vertical velocity [m/s], upward positive
 z0 = 0;                 % water surface position [m]
 
@@ -20,8 +20,8 @@ t_end = 0.12;           % maximum simulation time [s]
 t = 0:dt:t_end;
 
 %% Design parameter ranges
-c_list = [0.15 0.2 0.35];      % design chord length [m]
-beta_list_deg = [5 10 15 20 25 30];       % hydrofoil inclination angle [deg]
+c_list = [0.01];               % design chord length [m] (fixed at 10 mm)
+beta_list_deg = [5 10 15 20 25 30];       % hydrofoil inclination angle [deg] (independent variable)
 
 %% Plot all results
 figure_z = figure;
