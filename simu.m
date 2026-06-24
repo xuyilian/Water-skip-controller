@@ -1,264 +1,271 @@
 clear; clc; close all;
 
-%% Known parameters
-S = 3e-4;           % hydrofoil area of one foil [m^2] (10 mm chord x 30 mm span)
-N = 4;                  % number of hydrofoils
-rtip = 7e-2;            % tip radius [m]
-m = 70e-3;              % mass [kg]
-rho = 1000;             % water density [kg/m^3]
-g = 9.81;               % gravitational acceleration [m/s^2]
+% =========================================================================
+%  Water-skipping hop study
+%  Predicts the spin (omega) and vertical velocity (zdot) of the vehicle
+%  through one water contact (entry -> submerged -> exit), and sweeps the
+%  four engineering variables we can change:
+%       1) chord   (hydrofoil chord, tangential to the sweep)
+%       2) span    (hydrofoil radial span; rroot = rtip - span)
+%       3) beta    (hydrofoil angle of attack / inclination)
+%       4) zdot0   (vertical speed into the water at contact)
+%  All other parameters are held constant.
+% =========================================================================
 
-I = 7e-5;               % moment of inertia [kg*m^2], replace with measured value if available
+%% ===== Fixed parameters (held constant) =====
+N    = 4;            % number of hydrofoils
+rtip = 7e-2;         % hydrofoil tip radius [m]
+m    = 44e-3;        % vehicle mass [kg]
+rho  = 1000;         % water density [kg/m^3]
+g    = 9.81;         % gravitational acceleration [m/s^2]
 
-omega0 = deg2rad(3000); % initial angular velocity [rad/s] (3000 deg/s ~= 52.36 rad/s)
-zdot0 = -3.5;           % initial vertical velocity [m/s], upward positive
-z0 = 0;                 % water surface position [m]
+% Moment of inertia about the spin axis: uniform 2-D disk of the vehicle mass
+%   I = 1/2 * m * R_disk^2.  Change R_disk to update easily.
+R_disk = rtip;       % disk radius [m] (assumed = tip radius; easy to change)
+I      = 0.5 * m * R_disk^2;
 
-%% Simulation settings
-dt = 1e-5;              % time step [s]
-t_end = 0.12;           % maximum simulation time [s]
-t = 0:dt:t_end;
+% Spin: entry value and the controller minimum (both given in deg/s)
+omega0    = deg2rad(3000);   % entry spin at contact [rad/s] (3000 deg/s)
+omega_min = deg2rad(1000);   % controller minimum spin [rad/s] (1000 deg/s)
 
-%% Design parameter ranges
-c_list = [0.01];               % design chord length [m] (fixed at 10 mm)
-beta_list_deg = [5 10 15 20 25 30];       % hydrofoil inclination angle [deg] (independent variable)
+%% ===== Integration settings =====
+z0    = 0;           % water surface position [m]
+dt    = 1e-5;        % time step [s]
+t_end = 0.12;        % max simulation time [s]
+t     = 0:dt:t_end;
 
-%% Plot all results
-figure_z = figure;
-hold on; grid on; box on;
+%% ===== Nominal values of the four engineering variables =====
+nom.chord = 0.010;            % m (10 mm)
+nom.span  = 0.030;            % m (30 mm)
+nom.beta  = deg2rad(15);      % rad (15 deg)
+nom.zdot0 = -3.5;             % m/s (downward)
 
-figure_omega = figure;
-hold on; grid on; box on;
+%% ===== Sweep ranges for each variable =====
+chord_list = [0.006 0.010 0.014 0.018];        % m
+span_list  = [0.020 0.030 0.040 0.050];        % m
+beta_list  = deg2rad([5 10 15 20 25 30]);      % rad
+zdot0_list = [-2.0 -3.0 -4.0 -5.0];            % m/s
 
-legend_text = {};
+%% ===== Pack constants into a struct for the helpers =====
+params = struct('N',N,'rtip',rtip,'m',m,'I',I,'rho',rho,'g',g, ...
+                'omega0',omega0,'omega_min',omega_min,'z0',z0,'t',t,'dt',dt);
 
-fprintf('\nSimulation results:\n');
-fprintf('---------------------------------------------------------------\n');
+%% ===== Report nominal-case result =====
+[~,~,~,we_nom,ze_nom,te_nom] = run_case(nom.chord,nom.span,nom.beta,nom.zdot0,params);
+fprintf('\nNominal case (chord=%.0f mm, span=%.0f mm, beta=%.0f deg, zdot0=%.1f m/s):\n', ...
+    nom.chord*1e3, nom.span*1e3, rad2deg(nom.beta), nom.zdot0);
+fprintf('  omega_exit = %.0f deg/s (min %.0f),  zdot_exit = %.3f m/s,  t_contact = %.2f ms\n', ...
+    rad2deg(we_nom), rad2deg(omega_min), ze_nom, te_nom*1e3);
 
-for ci = 1:length(c_list)
-    for bi = 1:length(beta_list_deg)
+%% ===== Four one-at-a-time sweeps (time-series of omega and zdot) =====
+[eo_chord, ez_chord] = sweep_and_plot('chord', chord_list, chord_list*1e3,    'c = %.0f mm',     nom, params);
+[eo_span,  ez_span ] = sweep_and_plot('span',  span_list,  span_list*1e3,     'span = %.0f mm',  nom, params);
+[eo_beta,  ez_beta ] = sweep_and_plot('beta',  beta_list,  rad2deg(beta_list),'\\beta = %.0f deg',nom, params);
+[eo_zd,    ez_zd   ] = sweep_and_plot('zdot0', zdot0_list, zdot0_list,        'z'' = %.1f m/s',   nom, params);
 
-        c = c_list(ci);
-        beta = deg2rad(beta_list_deg(bi));
+%% ===== Exit-metric summary (omega_exit and zdot_exit vs each variable) =====
+figure('Name','Exit metrics vs each engineering variable');
+tiledlayout(4,2,'TileSpacing','compact','Padding','compact');
+omin_deg = rad2deg(omega_min);
 
-        [time, z_history, zdot_history, omega_history, ...
-            z_exit, zdot_exit, omega_exit, t_exit] = simulate_water_skipping( ...
-            c, beta, S, N, rtip, m, I, rho, g, omega0, z0, zdot0, t, dt);
+summary_panel(chord_list*1e3, eo_chord, ez_chord, 'chord [mm]', omin_deg);
+summary_panel(span_list*1e3,  eo_span,  ez_span,  'span [mm]',  omin_deg);
+summary_panel(rad2deg(beta_list), eo_beta, ez_beta, '\beta [deg]', omin_deg);
+summary_panel(zdot0_list, eo_zd, ez_zd, 'z'' into water [m/s]', omin_deg);
 
-        % Skip invalid geometry
-        if any(isnan(z_history)) || isnan(z_exit)
-            fprintf('c = %.0f mm, beta = %.0f deg: invalid geometry or no exit\n', ...
-                c * 1000, beta_list_deg(bi));
+% =========================================================================
+%  Helper functions
+% =========================================================================
+
+%% Run one case and return time series + exit values
+function [time, omega_t, zdot_t, omega_exit, zdot_exit, t_exit] = run_case(chord, span, beta, zdot0, p)
+    [time, ~, zdot_t, omega_t, ~, zdot_exit, omega_exit, t_exit] = simulate_water_skipping( ...
+        chord, span, beta, p.N, p.rtip, p.m, p.I, p.rho, p.g, p.omega0, p.z0, zdot0, p.t, p.dt);
+end
+
+%% Sweep one variable, plot omega(t) and zdot(t) families, return exit metrics
+function [exit_omega_deg, exit_zdot] = sweep_and_plot(field, vals, dispvals, fmt, nom, params)
+    n = numel(vals);
+    exit_omega_deg = nan(1,n);
+    exit_zdot      = nan(1,n);
+    cmap = lines(n);
+
+    figure('Name', sprintf('Sweep: %s', field));
+    tiledlayout(2,1,'TileSpacing','compact','Padding','compact');
+    ax1 = nexttile; hold(ax1,'on'); grid(ax1,'on'); box(ax1,'on');
+    ax2 = nexttile; hold(ax2,'on'); grid(ax2,'on'); box(ax2,'on');
+
+    h_lines = gobjects(0);   % handles of plotted curves, for the legend
+    leg     = {};
+
+    fprintf('\nSweep over %s:\n', field);
+    for i = 1:n
+        cse = nom;
+        cse.(field) = vals(i);
+        [time, omega_t, zdot_t, omega_exit, zdot_exit, t_exit] = ...
+            run_case(cse.chord, cse.span, cse.beta, cse.zdot0, params);
+
+        % Skip only truly invalid runs (e.g. bad geometry -> length mismatch)
+        if numel(omega_t) ~= numel(time)
+            fprintf('  %-14s : invalid geometry\n', sprintf(fmt, dispvals(i)));
             continue;
         end
 
-        label_text = sprintf('c = %.0f mm, \\beta = %.0f deg', ...
-            c * 1000, beta_list_deg(bi));
-        legend_text{end+1} = label_text;
+        % Always plot the trajectory, exit or not
+        hl = plot(ax1, time*1e3, rad2deg(omega_t), 'Color', cmap(i,:), 'LineWidth', 1.3);
+        plot(ax2, time*1e3, zdot_t, 'Color', cmap(i,:), 'LineWidth', 1.3);
+        h_lines(end+1) = hl; %#ok<AGROW>
 
-        % Plot z(t)
-        figure(figure_z);
-        plot(time, z_history * 1000, 'LineWidth', 1.2);
-        plot(t_exit, z_exit * 1000, 'o', 'MarkerSize', 6, 'LineWidth', 1.2);
+        if isnan(omega_exit)
+            leg{end+1} = sprintf([fmt '  (no exit)'], dispvals(i)); %#ok<AGROW>
+            fprintf('  %-14s : NO EXIT (stays submerged)\n', sprintf(fmt, dispvals(i)));
+        else
+            exit_omega_deg(i) = rad2deg(omega_exit);
+            exit_zdot(i)      = zdot_exit;
+            plot(ax1, t_exit*1e3, rad2deg(omega_exit), 'o', ...
+                'Color', cmap(i,:), 'MarkerFaceColor', cmap(i,:));
+            plot(ax2, t_exit*1e3, zdot_exit, 'o', ...
+                'Color', cmap(i,:), 'MarkerFaceColor', cmap(i,:));
+            leg{end+1} = sprintf([fmt '  (exit @ %.0f ms)'], dispvals(i), t_exit*1e3); %#ok<AGROW>
+            fprintf('  %-14s : omega_exit = %5.0f deg/s,  zdot_exit = %+.2f m/s,  t = %.1f ms\n', ...
+                sprintf(fmt, dispvals(i)), rad2deg(omega_exit), zdot_exit, t_exit*1e3);
+        end
+    end
 
-        % Plot omega(t)
-        figure(figure_omega);
-        plot(time, omega_history, 'LineWidth', 1.2);
-        plot(t_exit, omega_exit, 'o', 'MarkerSize', 6, 'LineWidth', 1.2);
-
-        fprintf(['c = %.0f mm, beta = %.0f deg: ', ...
-                 'z_exit = %.6f mm, zdot_exit = %.3f m/s, ', ...
-                 'omega_exit = %.3f rad/s, t_exit = %.5f s\n'], ...
-            c * 1000, beta_list_deg(bi), ...
-            z_exit * 1000, zdot_exit, omega_exit, t_exit);
+    yline(ax1, rad2deg(params.omega_min), 'k--', 'controller min');
+    yline(ax2, 0, 'k:');
+    xlabel(ax1,'time [ms]'); ylabel(ax1,'\omega [deg/s]');
+    xlabel(ax2,'time [ms]'); ylabel(ax2,'z'' [m/s]');
+    title(ax1, sprintf('\\omega(t), sweeping %s', field));
+    title(ax2, sprintf('z''(t), sweeping %s', field));
+    if ~isempty(h_lines)
+        legend(ax1, h_lines, leg, 'Location','eastoutside');
     end
 end
 
-%% Format z plot
-figure(figure_z);
-xlabel('Time [s]');
-ylabel('Vertical position z [mm]');
-title('Vertical motion under different c and \beta');
-yline(0, '--', 'Water surface');
-legend(legend_text, 'Location', 'eastoutside');
+%% One row of the summary figure: omega_exit and zdot_exit vs a variable
+function summary_panel(x, exit_omega_deg, exit_zdot, xlab, omin_deg)
+    nexttile;
+    plot(x, exit_omega_deg, '-o', 'LineWidth', 1.3); grid on; hold on;
+    yline(omin_deg, 'k--', 'controller min');
+    xlabel(xlab); ylabel('\omega_{exit} [deg/s]');
 
-%% Format omega plot
-figure(figure_omega);
-xlabel('Time [s]');
-ylabel('Angular velocity \omega [rad/s]');
-title('Angular velocity under different c and \beta');
-legend(legend_text, 'Location', 'eastoutside');
+    nexttile;
+    plot(x, exit_zdot, '-o', 'LineWidth', 1.3); grid on; hold on;
+    yline(0, 'k:');
+    xlabel(xlab); ylabel('z''_{exit} [m/s]');
+end
 
-%% Function: simulate one case
+%% Simulate one water contact (entry -> submerged -> exit)
 function [time, z_history, zdot_history, omega_history, ...
     z_exit, zdot_exit, omega_exit, t_exit] = simulate_water_skipping( ...
-    c, beta, S, N, rtip, m, I, rho, g, omega0, z0, zdot0, t, dt)
+    chord, span, beta, N, rtip, m, I, rho, g, omega0, z0, zdot0, t, dt)
 
-    z = z0;
-    zdot = zdot0;
-    omega = omega0;
+    z = z0;  zdot = zdot0;  omega = omega0;
 
-    z_history = zeros(size(t));
-    zdot_history = zeros(size(t));
+    z_history     = zeros(size(t));
+    zdot_history  = zeros(size(t));
     omega_history = zeros(size(t));
 
-    z_exit = NaN;
-    zdot_exit = NaN;
-    omega_exit = NaN;
-    t_exit = NaN;
-
+    z_exit = NaN;  zdot_exit = NaN;  omega_exit = NaN;  t_exit = NaN;
     has_submerged = false;
 
     for k = 1:length(t)
-
-        z_history(k) = z;
-        zdot_history(k) = zdot;
+        z_history(k)     = z;
+        zdot_history(k)  = zdot;
         omega_history(k) = omega;
 
         if z < 0
             has_submerged = true;
         end
 
-        % Compute hydrodynamic thrust and resisting torque
-        [T, Q] = compute_thrust_and_torque(c, beta, S, N, rtip, rho, omega, z, zdot);
+        % Hydrodynamic vertical thrust and resisting torque
+        [T, Q] = compute_thrust_and_torque(chord, span, beta, N, rtip, rho, omega, z, zdot);
 
         if isnan(T) || isnan(Q)
             time = t(1:k);
-            z_history = NaN;
-            zdot_history = NaN;
-            omega_history = NaN;
+            z_history = NaN;  zdot_history = NaN;  omega_history = NaN;
             return;
         end
 
-        % Upward-positive vertical dynamics:
-        % m*zddot = T - mg
-        zddot = T / m - g;
-
-        % Rotational dynamics:
-        % I*omegadot = -Q
+        % Vertical (upward positive) and rotational dynamics
+        zddot    = T / m - g;
         omegadot = -Q / I;
 
-        % Store previous state
-        z_prev = z;
-        zdot_prev = zdot;
-        omega_prev = omega;
-        t_prev = t(k);
+        z_prev = z;  zdot_prev = zdot;  omega_prev = omega;  t_prev = t(k);
 
-        % Semi-implicit Euler integration
-        zdot = zdot + zddot * dt;
-        z = z + zdot * dt;
+        % Semi-implicit Euler
+        zdot  = zdot  + zddot * dt;
+        z     = z     + zdot  * dt;
         omega = omega + omegadot * dt;
-
-        % Avoid negative angular velocity
         omega = max(omega, 0);
 
-        % Check water exit:
-        % z crosses from negative to zero/positive with upward velocity
+        % Water exit: z crosses 0 upward after having submerged
         if has_submerged && z_prev < 0 && z >= 0 && zdot > 0
-
-            % Linear interpolation ratio
             ratio = (0 - z_prev) / (z - z_prev);
-
-            % Interpolated exit states
-            t_exit = t_prev + ratio * dt;
-            z_exit = 0;
-            zdot_exit = zdot_prev + ratio * (zdot - zdot_prev);
+            t_exit     = t_prev + ratio * dt;
+            z_exit     = 0;
+            zdot_exit  = zdot_prev  + ratio * (zdot  - zdot_prev);
             omega_exit = omega_prev + ratio * (omega - omega_prev);
 
-            % Append exact exit point
             time = [t(1:k), t_exit];
-
-            z_history(k+1) = z_exit;
-            zdot_history(k+1) = zdot_exit;
+            z_history(k+1)     = z_exit;
+            zdot_history(k+1)  = zdot_exit;
             omega_history(k+1) = omega_exit;
-
-            z_history = z_history(1:k+1);
-            zdot_history = zdot_history(1:k+1);
+            z_history     = z_history(1:k+1);
+            zdot_history  = zdot_history(1:k+1);
             omega_history = omega_history(1:k+1);
-
             return;
         end
     end
 
-    % If no exit happens within simulation time
+    % No exit within simulation time
     time = t;
-    z_history = z_history(1:length(t));
-    zdot_history = zdot_history(1:length(t));
+    z_history     = z_history(1:length(t));
+    zdot_history  = zdot_history(1:length(t));
     omega_history = omega_history(1:length(t));
 end
 
-%% Function: compute total vertical thrust and resisting torque
-function [T_total, Q_total] = compute_thrust_and_torque(c, beta, S, N, rtip, rho, omega, z, zdot)
-
-    % Coordinate definition:
-    % z = 0: water surface
-    % z < 0: hydrofoil is submerged
-    % z > 0: hydrofoil is above water
+%% Total vertical thrust and resisting torque from N hydrofoils
+function [T_total, Q_total] = compute_thrust_and_torque(chord, span, beta, N, rtip, rho, omega, z, zdot)
+    % z >= 0 : foil above water, no force
     if z >= 0
-        T_total = 0;
-        Q_total = 0;
-        return;
+        T_total = 0;  Q_total = 0;  return;
     end
 
-    % Penetration depth
-    h = -z;
+    h     = -z;                 % penetration depth
+    rroot = rtip - span;        % root radius set directly by span
 
-    % Root radius determined by design chord length
-    rroot = rtip - S / c;
-
-    % Invalid geometry
     if rroot < 0 || rroot >= rtip
-        T_total = NaN;
-        Q_total = NaN;
-        return;
+        T_total = NaN;  Q_total = NaN;  return;     % invalid geometry
     end
 
-    % Effective submerged chord length
-    c_sub = min(h / sin(beta), c);
-
+    % Effective submerged chord grows as the inclined plate penetrates
+    c_sub = min(h / sin(beta), chord);
     if c_sub <= 0
-        T_total = 0;
-        Q_total = 0;
-        return;
+        T_total = 0;  Q_total = 0;  return;
     end
 
-    % Numerical integration along radius
+    % Blade-element integration along the span
     nr = 300;
-    r = linspace(rroot, rtip, nr);
+    r  = linspace(rroot, rtip, nr);
 
-    % Local tangential velocity
-    vx = omega .* r;
+    vx    = omega .* r;                 % tangential velocity
+    v     = sqrt(vx.^2 + zdot.^2);      % resultant velocity
+    gamma = atan2(-zdot, vx);           % inflow angle (zdot<0 = downward)
+    alpha = beta + gamma;               % angle of attack
 
-    % Resultant velocity
-    v = sqrt(vx.^2 + zdot.^2);
-
-    % Inflow angle
-    % zdot < 0 means moving downward
-    gamma = atan2(-zdot, vx);
-
-    % Angle of attack
-    alpha = beta + gamma;
-
-    % Flat-plate lift and drag coefficients
+    % Flat-plate (separated-flow) coefficients
     CL = 2 .* sin(alpha) .* cos(alpha);
     CD = 2 .* sin(alpha).^2;
 
-    % Differential vertical thrust integrand
-    integrand_T = 0.5 .* rho .* c_sub .* v.^2 .* ...
-        (CL .* cos(gamma) + CD .* sin(gamma));
+    integrand_T = 0.5 .* rho .* c_sub      .* v.^2 .* (CL .* cos(gamma) + CD .* sin(gamma));
+    integrand_Q = 0.5 .* rho .* c_sub .* r .* v.^2 .* (CD .* cos(gamma) - CL .* sin(gamma));
 
-    % Differential resisting torque integrand
-    integrand_Q = 0.5 .* rho .* c_sub .* r .* v.^2 .* ...
-        (CD .* cos(gamma) - CL .* sin(gamma));
-
-    % Integrate over one hydrofoil
     T_foil = trapz(r, integrand_T);
     Q_foil = trapz(r, integrand_Q);
 
-    % Total force and torque from N hydrofoils
     T_total = N * T_foil;
     Q_total = N * Q_foil;
-
-    % Ensure resisting torque is non-negative
-    Q_total = max(Q_total, 0);
+    Q_total = max(Q_total, 0);          % resisting torque is non-negative
 end
