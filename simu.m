@@ -65,16 +65,16 @@ fprintf('  omega_exit = %.0f deg/s (min %.0f),  zdot_exit = %.3f m/s,  t_contact
 
 %% ===== Optimization: grids for the 2-D surfaces and the 4-D search =====
 % Smooth grids for the 3-D surfaces (any two variables -> xy-plane)
-gs.chord = linspace(0.006, 0.018, 30);
-gs.span  = linspace(0.020, 0.050, 30);
-gs.beta  = deg2rad(linspace(5, 30, 30));
-gs.zdot0 = linspace(-1.0, -5.0, 30);
+gs.chord = linspace(0.006, 0.018, 45);
+gs.span  = linspace(0.020, 0.050, 45);
+gs.beta  = deg2rad(linspace(5, 30, 45));
+gs.zdot0 = linspace(-1.0, -5.0, 45);
 
 % Coarser grid for the exhaustive 4-D optimum search
-g4.chord = linspace(0.006, 0.018, 9);
-g4.span  = linspace(0.020, 0.050, 9);
-g4.beta  = deg2rad(linspace(5, 30, 9));
-g4.zdot0 = linspace(-1.0, -5.0, 9);
+g4.chord = linspace(0.006, 0.018, 7);
+g4.span  = linspace(0.020, 0.050, 7);
+g4.beta  = deg2rad(linspace(5, 30, 7));
+g4.zdot0 = linspace(-1.0, -5.0, 7);
 
 %% ===== 3-D surfaces: choose any two variables for the xy-plane =====
 % Each call plots the hop (zdot_exit) and the retained spin (omega_exit) over
@@ -195,27 +195,34 @@ function surf_pair(fieldX, fieldY, gridv, nom, params)
 
     % Best feasible design in this slice (max hop with omega_exit >= floor)
     Zhop_feas = Zhop;
-    Zhop_feas(Zspin < omin_deg) = NaN;
+    Zhop_feas(isnan(Zspin) | Zspin < omin_deg) = NaN;
     [best, idx] = max(Zhop_feas(:));
+
+    % Fill non-hopping points with 0 so each surface spans the whole quadrant
+    % (out to all four borders) instead of leaving holes.
+    Zhop_plot  = Zhop;   Zhop_plot(isnan(Zhop_plot))   = 0;
+    Zspin_plot = Zspin;  Zspin_plot(isnan(Zspin_plot)) = 0;
 
     figure('Name', sprintf('Surfaces: %s vs %s', fieldX, fieldY));
     tiledlayout(1,2,'TileSpacing','compact','Padding','compact');
 
     % --- Hop surface ---
     nexttile;
-    surf(DX, DY, Zhop, 'EdgeColor','none', 'FaceAlpha',0.9); hold on; grid on; view(135,30);
+    surf(DX, DY, Zhop_plot, 'EdgeColor','none', 'FaceColor','interp'); hold on; grid on;
+    view(135,30); axis tight;
     if ~isnan(best)
         plot3(DX(idx), DY(idx), best, 'rp', 'MarkerSize',16, 'MarkerFaceColor','r');
     end
     xlabel(labx); ylabel(laby); zlabel('z''_{exit}  (hop) [m/s]');
-    title('Hop: exit vertical velocity'); colorbar;
+    title('Hop: exit vertical velocity  (0 = no hop)'); colorbar;
 
     % --- Retained-spin surface with controller floor plane ---
     nexttile;
-    surf(DX, DY, Zspin, 'EdgeColor','none', 'FaceAlpha',0.9); hold on; grid on; view(135,30);
+    surf(DX, DY, Zspin_plot, 'EdgeColor','none', 'FaceColor','interp'); hold on; grid on;
+    view(135,30); axis tight;
     surf(DX, DY, omin_deg*ones(nY,nX), 'FaceColor',[0.85 0.2 0.2], 'FaceAlpha',0.25, 'EdgeColor','none');
     xlabel(labx); ylabel(laby); zlabel('\omega_{exit} [deg/s]');
-    title(sprintf('Retained spin (floor = %.0f deg/s)', omin_deg)); colorbar;
+    title(sprintf('Retained spin (floor = %.0f deg/s;  0 = no hop)', omin_deg)); colorbar;
 
     if ~isnan(best)
         fprintf('[surf %s vs %s] best feasible hop z''_exit = %.2f m/s at %s = %.3g, %s = %.3g\n', ...
@@ -360,7 +367,7 @@ function [T_total, Q_total] = compute_thrust_and_torque(chord, span, beta, N, rt
     end
 
     % Blade-element integration along the span
-    nr = 100;
+    nr = 60;
     r  = linspace(rroot, rtip, nr);
 
     vx    = omega .* r;                 % tangential velocity
