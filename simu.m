@@ -31,14 +31,14 @@ omega_min = deg2rad(1000);   % controller minimum spin [rad/s] (1000 deg/s)
 %% ===== Integration settings =====
 z0    = 0;           % water surface position [m]
 dt    = 1e-5;        % time step [s]
-t_end = 0.12;        % max simulation time [s]
+t_end = 0.3;        % max simulation time [s]
 t     = 0:dt:t_end;
 
 %% ===== Nominal values of the four engineering variables =====
 nom.chord = 0.010;            % m (10 mm)
-nom.span  = 0.030;            % m (30 mm)
-nom.beta  = deg2rad(15);      % rad (15 deg)
-nom.zdot0 = -3.5;             % m/s (downward)
+nom.span  = 0.045;            % m (30 mm)
+nom.beta  = deg2rad(10);      % rad (15 deg)
+nom.zdot0 = -1.5;             % m/s (downward)
 
 %% ===== Sweep ranges for each variable =====
 chord_list = [0.006 0.010 0.014 0.018];        % m
@@ -63,15 +63,29 @@ fprintf('  omega_exit = %.0f deg/s (min %.0f),  zdot_exit = %.3f m/s,  t_contact
 [eo_beta,  ez_beta ] = sweep_and_plot('beta',  beta_list,  rad2deg(beta_list),'\\beta = %.0f deg',nom, params);
 [eo_zd,    ez_zd   ] = sweep_and_plot('zdot0', zdot0_list, zdot0_list,        'z'' = %.1f m/s',   nom, params);
 
-%% ===== Exit-metric summary (omega_exit and zdot_exit vs each variable) =====
-figure('Name','Exit metrics vs each engineering variable');
-tiledlayout(4,2,'TileSpacing','compact','Padding','compact');
-omin_deg = rad2deg(omega_min);
+%% ===== Optimization: grids for the 2-D surfaces and the 4-D search =====
+% Smooth grids for the 3-D surfaces (any two variables -> xy-plane)
+gs.chord = linspace(0.006, 0.018, 30);
+gs.span  = linspace(0.020, 0.050, 30);
+gs.beta  = deg2rad(linspace(5, 30, 30));
+gs.zdot0 = linspace(-1.0, -5.0, 30);
 
-summary_panel(chord_list*1e3, eo_chord, ez_chord, 'chord [mm]', omin_deg);
-summary_panel(span_list*1e3,  eo_span,  ez_span,  'span [mm]',  omin_deg);
-summary_panel(rad2deg(beta_list), eo_beta, ez_beta, '\beta [deg]', omin_deg);
-summary_panel(zdot0_list, eo_zd, ez_zd, 'z'' into water [m/s]', omin_deg);
+% Coarser grid for the exhaustive 4-D optimum search
+g4.chord = linspace(0.006, 0.018, 9);
+g4.span  = linspace(0.020, 0.050, 9);
+g4.beta  = deg2rad(linspace(5, 30, 9));
+g4.zdot0 = linspace(-1.0, -5.0, 9);
+
+%% ===== 3-D surfaces: choose any two variables for the xy-plane =====
+% Each call plots the hop (zdot_exit) and the retained spin (omega_exit) over
+% a variable pair, with the other two held at nominal.  The controller floor
+% is drawn and the best feasible point (max hop with omega_exit >= floor) is
+% marked.  Swap the first two arguments to view any other pair.
+surf_pair('beta','zdot0', gs, nom, params);    % strongest energy levers
+surf_pair('chord','span', gs, nom, params);    % geometry / area pair
+
+%% ===== Global optimum across all four variables =====
+optimize_hop(g4, params);
 
 % =========================================================================
 %  Helper functions
@@ -143,17 +157,106 @@ function [exit_omega_deg, exit_zdot] = sweep_and_plot(field, vals, dispvals, fmt
     end
 end
 
-%% One row of the summary figure: omega_exit and zdot_exit vs a variable
-function summary_panel(x, exit_omega_deg, exit_zdot, xlab, omin_deg)
-    nexttile;
-    plot(x, exit_omega_deg, '-o', 'LineWidth', 1.3); grid on; hold on;
-    yline(omin_deg, 'k--', 'controller min');
-    xlabel(xlab); ylabel('\omega_{exit} [deg/s]');
+%% Display scaling and axis label for a given variable
+function [d, lab] = var_disp(field, v)
+    switch field
+        case 'chord'; d = v*1e3;      lab = 'chord [mm]';
+        case 'span';  d = v*1e3;      lab = 'span [mm]';
+        case 'beta';  d = rad2deg(v); lab = '\beta [deg]';
+        case 'zdot0'; d = v;          lab = 'z'' into water [m/s]';
+        otherwise;    d = v;          lab = field;
+    end
+end
 
+%% 3-D surfaces of hop and retained spin over a pair of variables
+function surf_pair(fieldX, fieldY, gridv, nom, params)
+    vx = gridv.(fieldX);  nX = numel(vx);
+    vy = gridv.(fieldY);  nY = numel(vy);
+    Zhop  = nan(nY, nX);   % zdot_exit  [m/s]
+    Zspin = nan(nY, nX);   % omega_exit [deg/s]
+
+    for r = 1:nY
+        for c = 1:nX
+            cse = nom;
+            cse.(fieldX) = vx(c);
+            cse.(fieldY) = vy(r);
+            [~,~,~, we, ze, ~] = run_case(cse.chord, cse.span, cse.beta, cse.zdot0, params);
+            if ~isnan(we)
+                Zhop(r,c)  = ze;
+                Zspin(r,c) = rad2deg(we);
+            end
+        end
+    end
+
+    [dx, labx] = var_disp(fieldX, vx);
+    [dy, laby] = var_disp(fieldY, vy);
+    [DX, DY]   = meshgrid(dx, dy);
+    omin_deg   = rad2deg(params.omega_min);
+
+    % Best feasible design in this slice (max hop with omega_exit >= floor)
+    Zhop_feas = Zhop;
+    Zhop_feas(Zspin < omin_deg) = NaN;
+    [best, idx] = max(Zhop_feas(:));
+
+    figure('Name', sprintf('Surfaces: %s vs %s', fieldX, fieldY));
+    tiledlayout(1,2,'TileSpacing','compact','Padding','compact');
+
+    % --- Hop surface ---
     nexttile;
-    plot(x, exit_zdot, '-o', 'LineWidth', 1.3); grid on; hold on;
-    yline(0, 'k:');
-    xlabel(xlab); ylabel('z''_{exit} [m/s]');
+    surf(DX, DY, Zhop, 'EdgeColor','none', 'FaceAlpha',0.9); hold on; grid on; view(135,30);
+    if ~isnan(best)
+        plot3(DX(idx), DY(idx), best, 'rp', 'MarkerSize',16, 'MarkerFaceColor','r');
+    end
+    xlabel(labx); ylabel(laby); zlabel('z''_{exit}  (hop) [m/s]');
+    title('Hop: exit vertical velocity'); colorbar;
+
+    % --- Retained-spin surface with controller floor plane ---
+    nexttile;
+    surf(DX, DY, Zspin, 'EdgeColor','none', 'FaceAlpha',0.9); hold on; grid on; view(135,30);
+    surf(DX, DY, omin_deg*ones(nY,nX), 'FaceColor',[0.85 0.2 0.2], 'FaceAlpha',0.25, 'EdgeColor','none');
+    xlabel(labx); ylabel(laby); zlabel('\omega_{exit} [deg/s]');
+    title(sprintf('Retained spin (floor = %.0f deg/s)', omin_deg)); colorbar;
+
+    if ~isnan(best)
+        fprintf('[surf %s vs %s] best feasible hop z''_exit = %.2f m/s at %s = %.3g, %s = %.3g\n', ...
+            fieldX, fieldY, best, strtrim(labx), DX(idx), strtrim(laby), DY(idx));
+    else
+        fprintf('[surf %s vs %s] no feasible point in this slice\n', fieldX, fieldY);
+    end
+end
+
+%% Exhaustive 4-D search: max hop subject to omega_exit >= controller floor
+function optimize_hop(g, params)
+    omin_deg = rad2deg(params.omega_min);
+    ncases = numel(g.chord)*numel(g.span)*numel(g.beta)*numel(g.zdot0);
+    fprintf('\n4-D optimum search over %d designs...\n', ncases);
+    best = -inf;  bopt = [];
+    for ic = 1:numel(g.chord)
+      fprintf('  chord %d/%d\n', ic, numel(g.chord));
+      for is = 1:numel(g.span)
+        for ib = 1:numel(g.beta)
+          for iz = 1:numel(g.zdot0)
+            [~,~,~, we, ze, ~] = run_case(g.chord(ic), g.span(is), g.beta(ib), g.zdot0(iz), params);
+            if ~isnan(we) && rad2deg(we) >= omin_deg && ze > best
+                best = ze;
+                bopt = [g.chord(ic), g.span(is), g.beta(ib), g.zdot0(iz), rad2deg(we)];
+            end
+          end
+        end
+      end
+    end
+
+    fprintf('\n===== Global optimum: max hop with omega_exit >= %.0f deg/s =====\n', omin_deg);
+    if isempty(bopt)
+        fprintf('  No feasible design found in the search grid.\n');
+    else
+        fprintf('  z''_exit (hop)  = %.2f m/s   (hop height ~ %.0f mm)\n', best, 1000*best^2/(2*params.g));
+        fprintf('  chord          = %.1f mm\n', bopt(1)*1e3);
+        fprintf('  span           = %.1f mm\n', bopt(2)*1e3);
+        fprintf('  beta           = %.1f deg\n', rad2deg(bopt(3)));
+        fprintf('  zdot0 (entry)  = %.2f m/s\n', bopt(4));
+        fprintf('  omega_exit     = %.0f deg/s\n', bopt(5));
+    end
 end
 
 %% Simulate one water contact (entry -> submerged -> exit)
@@ -217,6 +320,16 @@ function [time, z_history, zdot_history, omega_history, ...
             omega_history = omega_history(1:k+1);
             return;
         end
+
+        % Early termination for hopeless dives (no exit will occur):
+        % spin fully drained while still sinking, or plunged far too deep.
+        if has_submerged && ((omega <= 0 && zdot <= 0) || z < -0.1)
+            time          = t(1:k);
+            z_history     = z_history(1:k);
+            zdot_history  = zdot_history(1:k);
+            omega_history = omega_history(1:k);
+            return;
+        end
     end
 
     % No exit within simulation time
@@ -247,7 +360,7 @@ function [T_total, Q_total] = compute_thrust_and_torque(chord, span, beta, N, rt
     end
 
     % Blade-element integration along the span
-    nr = 300;
+    nr = 100;
     r  = linspace(rroot, rtip, nr);
 
     vx    = omega .* r;                 % tangential velocity
