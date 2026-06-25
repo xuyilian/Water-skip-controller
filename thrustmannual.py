@@ -12,6 +12,7 @@ from jumping.jumping_estimator_v2 import RiseDetect
 from jumping.jumping_estimator_v2 import UdpRigidBodies3 as UdpRigidBodies
 from jumping.jumping_estimator_v2 import RealTimeProcessor
 from jumping.jumping_estimator_v2 import BiController
+from jumping.jumping_estimator_v2 import JoyBiController
 from jumping.jumping_estimator_v2 import FittedBiController
 from jumping.jumping_estimator_v2 import RProjectionLmsEstimator
 
@@ -41,7 +42,7 @@ def wait_for_start(PJ: PygameJoystick):
 if __name__ == '__main__':
 
     # ---------------- user config ----------------
-    uri = 'radio://0/66/2M'
+    uri = 'radio://0/99/2M'
 
     sample_time = 0.01
 
@@ -66,14 +67,29 @@ if __name__ == '__main__':
     #   0-10 s: ramp thrust from 0 to 25000
     #   10-13 s: hold thrust at 25000
     #   >13 s: right stick adjusts thrust around 25000
-    MANUAL_BASE_THRUST = 26000
-    MANUAL_RAMP_TIME = 10.0
+    MANUAL_BASE_THRUST = 30000
+    MANUAL_RAMP_TIME = 7.0
     MANUAL_HOLD_TIME = 3.0
     MANUAL_JOYSTICK_DELTA = 2000
-    MANUAL_THRUST_MIN = 7000
+    MANUAL_THRUST_MIN = 24000
     MANUAL_THRUST_MAX = 30000
 
     POSITION_GAIN = 0.3
+
+    # right stick Y integrates desired_z over time
+    DESIRED_Z_RATE = 0.2      # m/s when RightStickY is fully pushed
+    DESIRED_Z_MIN = 0.1
+    DESIRED_Z_MAX = 1.5
+
+    # BI mode step-thrust test triggered by R1
+    # When enabled:
+    #   pulse:   cmd_thrust = BI_STEP_THRUST for BI_STEP_DURATION seconds
+    #   recover: cmd_thrust = BI.thrust_flight until z reaches desired_z again
+    #   repeat automatically
+    BI_STEP_THRUST = 30000
+    BI_STEP_DURATION = 0.1
+    BI_STEP_ACC_Z_RISE_THRESHOLD = 0.1
+    BI_RECOVER_DURATION = 2
 
     # Online LMS low-frequency estimator for R13/R23
     # Model:
@@ -83,6 +99,16 @@ if __name__ == '__main__':
     R_LMS_MU = 0.5
     R_LMS_ALPHA = 0.5
     YAW_RATE_ALPHA = 0.3
+
+    # BI self-spin / motor-delay compensation.
+    # send_setpoint_revolving(..., yaw_torque, thrust) maps yaw_torque to
+    # firmware setpoint.attitude.yaw, then firmware multiplies it by 20000.
+    BI_YAW_TORQUE_CMD = 0.3
+    BI_MOTOR_RESPONSE_DELAY_S = 0.025
+    BI_USE_DYNAMIC_YAW_DELAY_DEG = True
+    BI_FIXED_YAW_DELAY_DEG = 0.6
+    BI_YAW_DELAY_SIGN = 1.0
+    BI_YAW_DELAY_DEG_LIMIT = 10.0
 
     # realtime first-order low-pass filter for derivative signals
     # smaller alpha -> stronger filtering, larger delay
@@ -94,29 +120,46 @@ if __name__ == '__main__':
 
     RD_circle = RiseDetect()
     RD_triangle = RiseDetect()
+    RD_R1 = RiseDetect()
 
     RTS = RealTimeSleeper(sample_time)
 
     BI = BiController(
-        r13_r23_kp=-3000,
-        xy_cmd_limit=600,
-        thrust_base=26000,
+        r13_r23_kp=-15.0,
+        xy_cmd_limit=120,
+        thrust_base=30000,
         thrust_min=3000,
-        thrust_max=56000,
-        z_kp=3000,
+        thrust_max=65000,
+        z_kp=10000,
         z_ki=0,
-        z_kd=55000,
+        z_kd=5000,
         z_int_limit=1,
-        xy_kp=0.05,
-        xy_kd=0.5)
+        xy_kp=0.2,
+        xy_kd=0.15)
 
+    JBI = JoyBiController(
+        r13_r23_kp=-6.0,
+        xy_cmd_limit=120.0,
+        thrust_base=49000,
+        thrust_min=3000,
+        thrust_max=60000,
+        z_kp=3000.0,
+        z_ki=0.0,
+        z_kd=55000.0,
+        z_int_limit=1.0,
+        joy_r13_gain=0.3,
+        joy_r23_gain=0.3,
+        joy_deadzone=0.05,
+        desired_r_limit=0.50,
+    )
+    
     FBI = FittedBiController(
-        wn_xy=1,
-        cmd_limit=500.0,
-        thrust_base=26000,
+        wn_xy=0.1,
+        cmd_limit=1000.0,
+        thrust_base=49000,
         thrust_min=3000,
         thrust_max=56000,
-        z_kp=10000.0,
+        z_kp=8000.0,
         z_ki=0,
         z_kd=5000.0,
         z_int_limit=1,
@@ -150,6 +193,9 @@ if __name__ == '__main__':
     # Crazyflie logging
     logging_list = {
         'pm.vbat': 'FP16',
+        'acc.x': 'FP16',
+        'acc.y': 'FP16',
+        'acc.z': 'FP16',
     }
 
     lc = LoggingCore(uri, 10, logging_list)
@@ -170,6 +216,16 @@ if __name__ == '__main__':
 
     print('Crazyflie connected, entering main loop ...')
 
+    # Set motor idle thrust before entering control loop
+    try:
+        lc.cf.param.set_value('powerDist.idleThrust', '6000')
+        time.sleep(0.1)
+        print('powerDist.idleThrust -> 6000')
+    except Exception as e:
+        print(f'[WARN] failed to set powerDist.idleThrust: {e}')
+
+    # ---------------- data saver ----------------
+
     # ---------------- data saver ----------------
 
     # wait until Crazyflie connection is ready
@@ -187,6 +243,7 @@ if __name__ == '__main__':
     'mocap_yawrate_deg', 'mocap_yawrate_deg_filt', 'f0_yaw',
     'desired_x', 'desired_y',
     'cmd_roll', 'cmd_pitch', 'cmd_yaw', 'cmd_thrust',
+    'BI_yaw_delay_deg', 'BI_yaw_torque_cmd',
     'right_stick_y', 'controllerEnable',
     )
 
@@ -207,7 +264,7 @@ if __name__ == '__main__':
 
     desired_x = 0.0
     desired_y = 0.0
-    desired_z = 0.5
+    desired_z = 1
 
     desired_R13 = desired_R23 = 0.0
 
@@ -240,14 +297,30 @@ if __name__ == '__main__':
 
     cmd_roll = cmd_pitch = cmd_yaw = 0.0
     cmd_thrust = 0
+    bi_yaw_delay_deg = 0.0
+    bi_yaw_torque_cmd = 0.0
 
     loop_flag = 0
+
+    bi_step_enable = False
+    bi_step_phase = 'idle'       # 'idle', 'pulse', or 'recover'
+    bi_step_start_time = None
+
+    acc_z_raw = 0.0
+    acc_z_prev = 0.0
+    acc_z_initialized = False
 
     while lc.is_connected:
         loop_flag += 1
         Abs_time = RTS.loop_start_time - start_time
 
         PJ.step()
+
+        logged_data = lc.get_logged_data()
+        acc_z_raw = float(logged_data.get('acc.z', 0.0))
+        if not acc_z_initialized:
+            acc_z_prev = acc_z_raw
+            acc_z_initialized = True
 
         # toggle controller with Circle
         if RD_circle.step(PJ.get_key('Circle')):
@@ -322,10 +395,31 @@ if __name__ == '__main__':
                     manual_stage = 'ramp'
                     print(f'[manual] ramp stage: 0 -> {MANUAL_BASE_THRUST} in {MANUAL_RAMP_TIME:.1f}s')
                 elif control_mode != 'manual':
+                    bi_step_enable = False
+                    bi_step_phase = 'idle'
+                    bi_step_start_time = None
+                    bi_step_left_target = False
+
                     manual_start_time = None
                     manual_stage = 'off'
+                    print('[manual] off stage: thrust = 0')
             except Exception as e:
                 print(f'[WARN] failed to set stabilizer.b: {e}')
+
+        # toggle BI step-thrust cycle with R1
+        if RD_R1.step(PJ.get_key('R1')):
+            bi_step_enable = not bi_step_enable
+
+            if bi_step_enable:
+                bi_step_phase = 'pulse'
+                bi_step_start_time = Abs_time
+                acc_z_prev = acc_z_raw
+                print('[BI step] enabled: thrust pulse -> 30000')
+            else:
+                bi_step_phase = 'idle'
+                bi_step_start_time = None
+                bi_step_left_target = False
+                print('[BI step] disabled')        
                 
         # emergency stop
         if PJ.get_key('Square'):
@@ -341,6 +435,10 @@ if __name__ == '__main__':
             mocap_vy = 0.0
             mocap_vx_filt = 0.0
             mocap_vy_filt = 0.0
+            bi_step_enable = False
+            bi_step_phase = 'idle'
+            bi_step_start_time = None
+            bi_step_left_target = False
             if armed:
                         lc.cf.platform.send_arming_request(False)
                         armed = False
@@ -472,6 +570,17 @@ if __name__ == '__main__':
 
         thrust_manual_direct = saturation(round(-JSR_y * THRUST_MAX), THRUST_MAX, THRUST_MIN)
 
+        # Integrate desired_z from right stick Y over time.
+        # Push RightStickY up/down to increase/decrease desired_z.
+        # The sign matches manual thrust convention:
+        #   negative JSR_y -> increase desired_z
+        if controllerEnable and control_mode == 'BI':
+            desired_z = saturation(
+                desired_z - JSR_y * DESIRED_Z_RATE * sample_time,
+                DESIRED_Z_MAX,
+                DESIRED_Z_MIN,
+    )
+
         if controllerEnable and control_mode == 'manual':
             if manual_start_time is None:
                 manual_start_time = Abs_time
@@ -510,6 +619,9 @@ if __name__ == '__main__':
                   mocap_x_filt, mocap_y_filt, mocap_z_raw, mocap_vx_filt, mocap_vy_filt, mocap_vz, 
                   mocap_yaw_deg, sample_time)    
 
+        JBI.update(JSL_x, -JSL_y, desired_z, R13_filt, R23_filt,
+            mocap_z_raw, mocap_vz, mocap_yaw_deg, sample_time)
+
         FBI.update(desired_x, desired_y, desired_z,
                    R13_filt, R23_filt, R13_d_filt, R23_d_filt,
                     mocap_x_filt, mocap_y_filt, mocap_z_raw, mocap_vx_filt, mocap_vy_filt, mocap_vz,
@@ -525,31 +637,97 @@ if __name__ == '__main__':
                 # only thrust is used
                 #cmd_roll = desired_x*1000
                 #cmd_pitch = desired_y*1000
-                cmd_roll = JSL_x 
-                cmd_pitch = -JSL_y 
-                cmd_yaw = mocap_yaw_deg
+                cmd_roll = JSL_x * 5
+                cmd_pitch = -JSL_y * 5
+                cmd_yaw = mocap_yaw_deg - 90
+                bi_yaw_delay_deg = 0.0
+                bi_yaw_torque_cmd = 0.0
 
 
             else:
                 # First-order P controller:
                 # desired_x tracks R13, desired_y tracks R23.
                 # cmd_roll is U_X, cmd_pitch is U_Y for firmware BI mode.
-                #cmd_thrust = BI.thrust_flight
-                #cmd_roll = BI.roll_flight/600
-                #cmd_pitch = BI.pitch_flight/600
-                #cmd_yaw = BI.yaw_flight
-                cmd_thrust = FBI.thrust_flight
-                cmd_roll = FBI.roll_flight
-                cmd_pitch = FBI.pitch_flight
-                cmd_yaw = FBI.yaw_flight
+                cmd_thrust = BI.thrust_flight
+                cmd_roll = BI.roll_flight
+                cmd_pitch = BI.pitch_flight
+                if BI_USE_DYNAMIC_YAW_DELAY_DEG:
+                    bi_yaw_delay_deg = BI_YAW_DELAY_SIGN * saturation(
+                        yawrate_deg_filt * BI_MOTOR_RESPONSE_DELAY_S,
+                        BI_YAW_DELAY_DEG_LIMIT,
+                        -BI_YAW_DELAY_DEG_LIMIT,
+                    )
+                else:
+                    bi_yaw_delay_deg = BI_YAW_DELAY_SIGN * saturation(
+                        BI_FIXED_YAW_DELAY_DEG,
+                        BI_YAW_DELAY_DEG_LIMIT,
+                        -BI_YAW_DELAY_DEG_LIMIT,
+                    )
+
+                cmd_yaw = BI.yaw_flight + bi_yaw_delay_deg
+                bi_yaw_torque_cmd = BI_YAW_TORQUE_CMD
+
+                #cmd_thrust = JBI.thrust_flight
+                #cmd_roll   = JBI.roll_flight
+                #cmd_pitch  = JBI.pitch_flight
+                #cmd_yaw    = JBI.yaw_flight
+
+                #cmd_thrust = FBI.thrust_flight
+                #cmd_roll = FBI.roll_flight
+                #cmd_pitch = FBI.pitch_flight
+                #cmd_yaw = FBI.yaw_flight - 90
+
+                if bi_step_enable:
+                    if bi_step_phase == 'idle':
+                        bi_step_phase = 'pulse'
+                        bi_step_start_time = Abs_time
+
+                    if bi_step_phase == 'pulse':
+                        cmd_thrust = BI_STEP_THRUST
+
+                        if bi_step_start_time is None:
+                            bi_step_start_time = Abs_time
+                            acc_z_prev = acc_z_raw
+
+                        # Only use raw acc.z rising detection.
+                        acc_z_rising = (acc_z_raw - acc_z_prev) > BI_STEP_ACC_Z_RISE_THRESHOLD
+
+                        if acc_z_rising:
+                            bi_step_phase = 'recover'
+                            bi_step_start_time = Abs_time
+                            print('[BI step] recover: raw acc.z rising')
+
+                        acc_z_prev = acc_z_raw
+
+                    elif bi_step_phase == 'recover':
+                        cmd_thrust = BI.thrust_flight
+
+                        if bi_step_start_time is None:
+                            bi_step_start_time = Abs_time
+
+                        if Abs_time - bi_step_start_time >= BI_RECOVER_DURATION:
+                            bi_step_phase = 'pulse'
+                            bi_step_start_time = Abs_time
+                            cmd_thrust = BI_STEP_THRUST
+                            acc_z_prev = acc_z_raw
+                            print('[BI step] pulse: thrust -> 30000 for 0.5 s')
+                print('thrust : ', cmd_thrust)
 
         else:
             cmd_roll = 0.0
             cmd_pitch = 0.0
             cmd_yaw = 0.0
             cmd_thrust = 0
+            bi_yaw_delay_deg = 0.0
+            bi_yaw_torque_cmd = 0.0
 
-        lc.cf.commander.send_setpoint(cmd_roll, cmd_pitch, cmd_yaw, cmd_thrust)
+        lc.cf.commander.send_setpoint_revolving(
+            cmd_roll,
+            cmd_pitch,
+            cmd_yaw,
+            bi_yaw_torque_cmd,
+            cmd_thrust,
+        )
 
 
         logged_data = lc.get_logged_data()
@@ -567,6 +745,7 @@ if __name__ == '__main__':
         float(yawrate_deg), float(yawrate_deg_filt), float(f0_yaw),
         float(desired_x), float(desired_y),
         float(cmd_roll), float(cmd_pitch), float(cmd_yaw), int(cmd_thrust),
+        float(bi_yaw_delay_deg), float(bi_yaw_torque_cmd),
         float(JSR_y), bool(controllerEnable),
     )
 

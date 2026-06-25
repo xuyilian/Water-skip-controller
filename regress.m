@@ -39,8 +39,8 @@ num_files = numel(file_names);
 fprintf('Selected %d MAT files.\n', num_files);
 
 %% ---------- User settings ----------
-yawrate_threshold = -2850;
-duration_after_threshold = 10;
+yawrate_threshold = -2800;
+duration_after_threshold = 1.5;
 
 vel_filter_window = 11;
 dd_filter_window  = 11;

@@ -22,6 +22,25 @@ t = t(idx);
 dt = diff(t);
 figure; plot(dt); grid on; title('dt 分布'); xlabel('k'); ylabel('dt [s]');
 
+%% ---------- Plot each axis separately ----------
+figure('Name', 'Acceleration components', 'NumberTitle', 'off');
+subplot(3,1,1);
+plot(Abs_time, acc_x, 'LineWidth', 1.2);
+grid on;
+ylabel('acc.x');
+title('Acceleration X');
+subplot(3,1,2)
+plot(Abs_time, acc_y, 'LineWidth', 1.2);
+grid on;
+ylabel('acc.y');
+title('Acceleration Y');
+subplot(3,1,3);
+plot(Abs_time, acc_z, 'LineWidth', 1.2);
+grid on;
+ylabel('acc.z');
+xlabel('Time [s]');
+title('Acceleration Z');
+
 %% ==== 1) 电池电压（如果有） ====
     figure('Name','Battery voltage','NumberTitle','off');
     plot(t, double(pm_vbat)); grid on;
@@ -308,7 +327,7 @@ xlabel('Time (s)');
 
 figure('Name','R13 R23 Tracking','NumberTitle','off');
 
-subplot(2,1,1);
+subplot(3,1,1);
 plot(Abs_time, mocap_x_raw, 'LineWidth', 1.0);
 hold on;
 plot(Abs_time, mocap_x_filt, 'LineWidth', 1.8);
@@ -318,10 +337,18 @@ ylabel('R13 / desired_x');
 title('R13 Tracking');
 legend('R13 raw', 'R13 filtered');
 
-subplot(2,1,2);
+subplot(3,1,2);
 plot(Abs_time, mocap_y_raw, 'LineWidth', 1.0);
 hold on;
 plot(Abs_time, mocap_y_filt, 'LineWidth', 1.8);
+grid on;
+xlabel('Time (s)');
+ylabel('R23 / desired_y');
+title('R23 Tracking');
+legend('R23 raw', 'R23 filtered');
+
+subplot(3,1,3);
+plot(Abs_time, mocap_z_raw, 'LineWidth', 1.0);
 grid on;
 xlabel('Time (s)');
 ylabel('R23 / desired_y');

@@ -16,17 +16,17 @@ clear; clc; close all;
 %% ===== Fixed parameters (held constant) =====
 N    = 4;            % number of hydrofoils
 rtip = 7e-2;         % hydrofoil tip radius [m]
-m    = 44e-3;        % vehicle mass [kg]
+m    = 40e-3;        % vehicle mass [kg]
 rho  = 1000;         % water density [kg/m^3]
 g    = 9.81;         % gravitational acceleration [m/s^2]
 
 % Moment of inertia about the spin axis: uniform 2-D disk of the vehicle mass
 %   I = 1/2 * m * R_disk^2.  Change R_disk to update easily.
 R_disk = rtip;       % disk radius [m] (assumed = tip radius; easy to change)
-I      = 0.5 * m * R_disk^2;
+I      = m * R_disk^2;
 
 % Spin: entry value and the controller minimum (both given in deg/s)
-omega0    = deg2rad(3000);   % entry spin at contact [rad/s] (3000 deg/s)
+omega0    = deg2rad(3500);   % entry spin at contact [rad/s] (3000 deg/s)
 omega_min = deg2rad(1000);   % controller minimum spin [rad/s] (1000 deg/s)
 
 %% ===== Integration settings =====
@@ -36,7 +36,7 @@ t_end = 0.3;         % max simulation time [s]
 t     = 0:dt:t_end;
 
 %% ===== Nominal values of the three engineering variables =====
-nom.span  = 0.045;            % m (45 mm)
+nom.span  = 0.065;            % m (45 mm)
 nom.beta  = deg2rad(10);      % rad (10 deg)
 nom.zdot0 = -1.5;             % m/s (downward)
 
@@ -63,14 +63,14 @@ sweep_and_plot('zdot0', zdot0_list, zdot0_list,        'z'' = %.1f m/s',   nom, 
 
 %% ===== Optimization: grids for the 2-D surfaces and the 3-D search =====
 % Smooth grids for the 3-D surfaces (any two variables -> xy-plane)
-gs.span  = linspace(0.020, 0.050, 45);
-gs.beta  = deg2rad(linspace(5, 30, 45));
-gs.zdot0 = linspace(-1.0, -5.0, 45);
+gs.span  = linspace(0.020, 0.070, 45);
+gs.beta  = deg2rad(linspace(5, 50, 45));
+gs.zdot0 = linspace(-0.5, -5.0, 45);
 
 % Coarser grid for the exhaustive 3-D optimum search
-g3.span  = linspace(0.020, 0.050, 12);
-g3.beta  = deg2rad(linspace(5, 30, 12));
-g3.zdot0 = linspace(-1.0, -5.0, 12);
+g3.span  = linspace(0.020, 0.070, 12);
+g3.beta  = deg2rad(linspace(5, 50, 12));
+g3.zdot0 = linspace(-0.5, -5.0, 12);
 
 %% ===== 3-D surfaces: choose any two variables for the xy-plane =====
 % Each call plots the hop (zdot_exit) and the retained spin (omega_exit) over

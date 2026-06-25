@@ -1978,6 +1978,187 @@ class BiController:
             self.roll_flight, self.pitch_flight, self.yaw_flight, self.thrust_flight,
         ]
 
+class JoyBiController:
+    def __init__(self,
+                 r13_r23_kp=-400.0,
+                 xy_cmd_limit=120.0,
+                 thrust_base=26000,
+                 thrust_min=3000,
+                 thrust_max=56000,
+                 z_kp=3000.0,
+                 z_ki=0.0,
+                 z_kd=55000.0,
+                 z_int_limit=1.0,
+                 joy_r13_gain=0.20,
+                 joy_r23_gain=0.20,
+                 joy_deadzone=0.05,
+                 desired_r_limit=0.25):
+        """
+        Joystick-based bicopter controller.
+
+        Difference from BiController:
+            BiController:     x/y position error -> desired_r13/desired_r23 -> cmd
+            JoyBiController:  joystick input      -> desired_r13/desired_r23 -> cmd
+
+        Other parts are kept the same style as BiController:
+            - R13/R23 proportional controller
+            - height PID
+            - output fields: roll_flight, pitch_flight, yaw_flight, thrust_flight
+
+        Joystick convention:
+            joy_r13 in [-1, 1] -> desired_r13
+            joy_r23 in [-1, 1] -> desired_r23
+
+        Command convention follows BiController:
+            roll_flight  controls R13 error
+            pitch_flight controls R23 error
+        """
+
+        # R13/R23 projection controller parameters
+        self.r13_r23_kp = r13_r23_kp
+        self.xy_cmd_limit = xy_cmd_limit
+
+        # Height PID parameters
+        self.thrust_base = thrust_base
+        self.thrust_min = thrust_min
+        self.thrust_max = thrust_max
+        self.z_kp = z_kp
+        self.z_ki = z_ki
+        self.z_kd = z_kd
+        self.z_int_limit = z_int_limit
+
+        # Joystick mapping parameters
+        self.joy_r13_gain = joy_r13_gain
+        self.joy_r23_gain = joy_r23_gain
+        self.joy_deadzone = joy_deadzone
+        self.desired_r_limit = desired_r_limit
+
+        # Internal states
+        self.desired_r13 = 0.0
+        self.desired_r23 = 0.0
+        self.desired_z = 0.0
+
+        self.R13_error = 0.0
+        self.R23_error = 0.0
+        self.z_error = 0.0
+        self.z_error_d = 0.0
+        self.z_error_i = 0.0
+
+        # Outputs, same style as BiController
+        self.roll_flight = 0.0
+        self.pitch_flight = 0.0
+        self.yaw_flight = 0.0
+        self.thrust_flight = 0
+
+        self.logging_list = [
+            'JBI_desired_r13', 'JBI_desired_r23', 'JBI_desired_z',
+            'JBI_R13_error', 'JBI_R23_error',
+            'JBI_z_error', 'JBI_z_error_d', 'JBI_z_error_i',
+            'JBI_roll_flight', 'JBI_pitch_flight', 'JBI_yaw_flight', 'JBI_thrust_flight',
+        ]
+        self.logging_data = [0.0] * len(self.logging_list)
+
+    def init(self, desired_z=0.0):
+        self.desired_r13 = 0.0
+        self.desired_r23 = 0.0
+        self.desired_z = desired_z
+
+        self.R13_error = 0.0
+        self.R23_error = 0.0
+        self.z_error = 0.0
+        self.z_error_d = 0.0
+        self.z_error_i = 0.0
+
+        self.roll_flight = 0.0
+        self.pitch_flight = 0.0
+        self.yaw_flight = 0.0
+        self.thrust_flight = 0
+
+        self.logging_data = [0.0] * len(self.logging_list)
+
+    def _apply_deadzone(self, value):
+        if abs(value) < self.joy_deadzone:
+            return 0.0
+        return value
+
+    def update(self, joy_r13, joy_r23, desired_z,
+               R13, R23,
+               z, z_dot,
+               yaw_deg, dt):
+        if dt <= 1e-6:
+            dt = 1e-6
+
+        # Joystick -> desired R13/R23.
+        # Inputs should be normalized to [-1, 1].
+        joy_r13 = saturation(joy_r13, 1.0, -1.0)
+        joy_r23 = saturation(joy_r23, 1.0, -1.0)
+
+        joy_r13 = self._apply_deadzone(joy_r13)
+        joy_r23 = self._apply_deadzone(joy_r23)
+
+        self.desired_r13 = saturation(
+            self.joy_r13_gain * joy_r13,
+            self.desired_r_limit,
+            -self.desired_r_limit,
+        )
+
+        self.desired_r23 = saturation(
+            self.joy_r23_gain * joy_r23,
+            self.desired_r_limit,
+            -self.desired_r_limit,
+        )
+
+        self.desired_z = desired_z
+
+        # R13/R23 proportional control, same structure as BiController.
+        self.R13_error = self.desired_r13 - R13
+        self.R23_error = self.desired_r23 - R23
+
+        roll_cmd = -self.r13_r23_kp * self.R13_error
+        pitch_cmd = -self.r13_r23_kp * self.R23_error
+
+        self.roll_flight = saturation(
+            roll_cmd,
+            self.xy_cmd_limit,
+            -self.xy_cmd_limit,
+        )
+
+        self.pitch_flight = saturation(
+            pitch_cmd,
+            self.xy_cmd_limit,
+            -self.xy_cmd_limit,
+        )
+
+        # Keep yaw behavior same as BiController baseline.
+        self.yaw_flight = yaw_deg
+
+        # Height PID, same style as BiController.
+        self.z_error = desired_z - z
+        self.z_error_d = -z_dot
+
+        self.z_error_i = saturation(
+            self.z_error_i + self.z_error * dt,
+            self.z_int_limit,
+            -self.z_int_limit,
+        )
+
+        thrust_cmd = (
+            self.thrust_base
+            + self.z_kp * self.z_error
+            + self.z_ki * self.z_error_i
+            + self.z_kd * self.z_error_d
+        )
+
+        self.thrust_flight = round(
+            saturation(thrust_cmd, self.thrust_max, self.thrust_min)
+        )
+
+        self.logging_data = [
+            self.desired_r13, self.desired_r23, self.desired_z,
+            self.R13_error, self.R23_error,
+            self.z_error, self.z_error_d, self.z_error_i,
+            self.roll_flight, self.pitch_flight, self.yaw_flight, self.thrust_flight,
+        ]
 
 # -------------------------------------------------------------------------
 # FittedBiController class (inserted before RProjectionLmsEstimator)
@@ -2048,7 +2229,7 @@ class FittedBiController:
         self.d_att = 0.459532
         self.gc = 2.347229
         self.by = 2.434112
-        self.bx = 2.434112
+        self.bx = 0.34112
 
         # Internal states
         self.desired_x = 0.0

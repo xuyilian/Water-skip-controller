@@ -22,6 +22,40 @@ t = t(idx);
 dt = diff(t);
 figure; plot(dt); grid on; title('dt 分布'); xlabel('k'); ylabel('dt [s]');
 
+%% ---------- Plot each axis separately ----------
+
+figure('Name', 'Acceleration components', 'NumberTitle', 'off');
+
+subplot(3,1,1);
+
+plot(t, ax_plot, 'LineWidth', 1.2);
+
+grid on;
+
+ylabel('acc.x');
+
+title('Acceleration X');
+
+subplot(3,1,2);
+
+plot(t, ay_plot, 'LineWidth', 1.2);
+
+grid on;
+
+ylabel('acc.y');
+
+title('Acceleration Y');
+
+subplot(3,1,3);
+
+plot(t, az_plot, 'LineWidth', 1.2);
+
+grid on;
+
+ylabel('acc.z');
+
+xlabel('Time [s]');
+title('Acceleration Z');
 %% ==== 1) 电池电压（如果有） ====
     figure('Name','Battery voltage','NumberTitle','off');
     plot(t, double(pm_vbat)); grid on;
@@ -52,9 +86,9 @@ figure; plot(dt); grid on; title('dt 分布'); xlabel('k'); ylabel('dt [s]');
 %% ==== 3) 动捕速度（注意：你当前代码 mocap_vz 保存的是 0.0） ====
 
     figure('Name','Mocap velocity','NumberTitle','off');
-    plot(t, mocap_vx, 'LineWidth',1.2); hold on;
-    plot(t, mocap_vy, 'LineWidth',1.2);
-    plot(t, mocap_vz, 'LineWidth',1.2);
+    plot(Abs_time, mocap_vx, 'LineWidth',1.2); hold on;
+    plot(Abs_time, mocap_vy, 'LineWidth',1.2);
+    plot(Abs_time, mocap_vz, 'LineWidth',1.2);
     grid on; xlabel('Time [s]'); ylabel('Velocity [m/s]');
     legend('mocap\_vx','mocap\_vy','mocap\_vz');
     title('Note: current logger sets mocap\_vz to 0.0 in script');
@@ -255,7 +289,7 @@ filter_window = 8;   % 越小滤波越轻，建议 3~10
 figure('Name','R13 R23 Tracking','NumberTitle','off');
 
 subplot(2,1,1);
-plot(Abs_time, R13, 'LineWidth', 1.0);
+plot(Abs_time, R13*100, 'LineWidth', 1.0);
 hold on;
 plot(Abs_time, R13_filt*1000, 'LineWidth', 1.8);
 plot(Abs_time, mocap_x_filt*1000, '--', 'LineWidth', 1.5);
@@ -308,7 +342,7 @@ xlabel('Time (s)');
 
 figure('Name','R13 R23 Tracking','NumberTitle','off');
 
-subplot(2,1,1);
+subplot(3,1,1);
 plot(Abs_time, mocap_x_raw, 'LineWidth', 1.0);
 hold on;
 plot(Abs_time, mocap_x_filt, 'LineWidth', 1.8);
@@ -318,10 +352,18 @@ ylabel('R13 / desired_x');
 title('R13 Tracking');
 legend('R13 raw', 'R13 filtered');
 
-subplot(2,1,2);
+subplot(3,1,2);
 plot(Abs_time, mocap_y_raw, 'LineWidth', 1.0);
 hold on;
 plot(Abs_time, mocap_y_filt, 'LineWidth', 1.8);
+grid on;
+xlabel('Time (s)');
+ylabel('R23 / desired_y');
+title('R23 Tracking');
+legend('R23 raw', 'R23 filtered');
+
+subplot(3,1,3);
+plot(Abs_time, mocap_z_raw, 'LineWidth', 1.0);
 grid on;
 xlabel('Time (s)');
 ylabel('R23 / desired_y');
@@ -344,7 +386,7 @@ legend('R23 raw', 'R23 filtered');
 t_all = Abs_time(:);
 
 % ---------- Find segment ----------
-yawrate_threshold = -4000;
+yawrate_threshold = -2800;
 duration_after_threshold = 3;   % seconds
 
 yawrate_signal = mocap_yawrate_deg_filt(:);
@@ -402,7 +444,7 @@ r23_filt = r23_filt(:);
 
 yawrate_filt_cut = yawrate_filt_cut(:);
 
-dd_filter_window = 11; 
+dd_filter_window = 21; 
 
 % ---------- First derivatives ----------
 x_raw_d = gradient(x_raw, t);
@@ -440,8 +482,8 @@ r13_raw_dd = gradient(r13_raw_d, t);
 
 r23_raw_dd = gradient(r23_raw_d, t);
 
-r13_filt_d_filt = movmean(r13_filt_d, dd_filter_window);
-r23_filt_d_filt = movmean(r23_filt_d, dd_filter_window);
+r13_filt_d_filt = movmean(R13_d_filt, dd_filter_window);
+r23_filt_d_filt = movmean(R23_d_filt, dd_filter_window);
 
 r13_filt_dd = gradient(r13_filt_d_filt, t);
 r23_filt_dd = gradient(r23_filt_d_filt, t);
