@@ -4,12 +4,13 @@ clear; clc; close all;
 %  Water-skipping hop study
 %  Predicts the spin (omega) and vertical velocity (zdot) of the vehicle
 %  through one water contact (entry -> submerged -> exit), and sweeps the
-%  four engineering variables we can change:
-%       1) chord   (hydrofoil chord, tangential to the sweep)
-%       2) span    (hydrofoil radial span; rroot = rtip - span)
-%       3) beta    (hydrofoil angle of attack / inclination)
-%       4) zdot0   (vertical speed into the water at contact)
-%  All other parameters are held constant.
+%  three engineering variables we can change:
+%       1) span    (hydrofoil radial span; rroot = rtip - span)
+%       2) beta    (hydrofoil angle of attack / inclination)
+%       3) zdot0   (vertical speed into the water at contact)
+%  The hydrofoil is a slanted edge ejected before the chord is fully wetted,
+%  so the submerged chord is c_sub = z/sin(beta) (uncapped) and chord is NOT
+%  a model parameter.  All other parameters are held constant.
 % =========================================================================
 
 %% ===== Fixed parameters (held constant) =====
@@ -31,70 +32,65 @@ omega_min = deg2rad(1000);   % controller minimum spin [rad/s] (1000 deg/s)
 %% ===== Integration settings =====
 z0    = 0;           % water surface position [m]
 dt    = 1e-5;        % time step [s]
-t_end = 0.3;        % max simulation time [s]
+t_end = 0.3;         % max simulation time [s]
 t     = 0:dt:t_end;
 
-%% ===== Nominal values of the four engineering variables =====
-nom.chord = 0.010;            % m (10 mm)
-nom.span  = 0.045;            % m (30 mm)
-nom.beta  = deg2rad(10);      % rad (15 deg)
+%% ===== Nominal values of the three engineering variables =====
+nom.span  = 0.045;            % m (45 mm)
+nom.beta  = deg2rad(10);      % rad (10 deg)
 nom.zdot0 = -1.5;             % m/s (downward)
 
 %% ===== Sweep ranges for each variable =====
-chord_list = [0.006 0.010 0.014 0.018];        % m
 span_list  = [0.020 0.030 0.040 0.050];        % m
 beta_list  = deg2rad([5 10 15 20 25 30]);      % rad
-zdot0_list = [-2.0 -3.0 -4.0 -5.0];            % m/s
+zdot0_list = [-1.0 -1.5 -2.0 -3.0];            % m/s
 
 %% ===== Pack constants into a struct for the helpers =====
 params = struct('N',N,'rtip',rtip,'m',m,'I',I,'rho',rho,'g',g, ...
                 'omega0',omega0,'omega_min',omega_min,'z0',z0,'t',t,'dt',dt);
 
 %% ===== Report nominal-case result =====
-[~,~,~,we_nom,ze_nom,te_nom] = run_case(nom.chord,nom.span,nom.beta,nom.zdot0,params);
-fprintf('\nNominal case (chord=%.0f mm, span=%.0f mm, beta=%.0f deg, zdot0=%.1f m/s):\n', ...
-    nom.chord*1e3, nom.span*1e3, rad2deg(nom.beta), nom.zdot0);
+[~,~,~,we_nom,ze_nom,te_nom] = run_case(nom.span,nom.beta,nom.zdot0,params);
+fprintf('\nNominal case (span=%.0f mm, beta=%.0f deg, zdot0=%.1f m/s):\n', ...
+    nom.span*1e3, rad2deg(nom.beta), nom.zdot0);
 fprintf('  omega_exit = %.0f deg/s (min %.0f),  zdot_exit = %.3f m/s,  t_contact = %.2f ms\n', ...
     rad2deg(we_nom), rad2deg(omega_min), ze_nom, te_nom*1e3);
 
-%% ===== Four one-at-a-time sweeps (time-series of omega and zdot) =====
-[eo_chord, ez_chord] = sweep_and_plot('chord', chord_list, chord_list*1e3,    'c = %.0f mm',     nom, params);
-[eo_span,  ez_span ] = sweep_and_plot('span',  span_list,  span_list*1e3,     'span = %.0f mm',  nom, params);
-[eo_beta,  ez_beta ] = sweep_and_plot('beta',  beta_list,  rad2deg(beta_list),'\\beta = %.0f deg',nom, params);
-[eo_zd,    ez_zd   ] = sweep_and_plot('zdot0', zdot0_list, zdot0_list,        'z'' = %.1f m/s',   nom, params);
+%% ===== Three one-at-a-time sweeps (time-series of omega and zdot) =====
+sweep_and_plot('span',  span_list,  span_list*1e3,     'span = %.0f mm',  nom, params);
+sweep_and_plot('beta',  beta_list,  rad2deg(beta_list),'\\beta = %.0f deg',nom, params);
+sweep_and_plot('zdot0', zdot0_list, zdot0_list,        'z'' = %.1f m/s',   nom, params);
 
-%% ===== Optimization: grids for the 2-D surfaces and the 4-D search =====
+%% ===== Optimization: grids for the 2-D surfaces and the 3-D search =====
 % Smooth grids for the 3-D surfaces (any two variables -> xy-plane)
-gs.chord = linspace(0.006, 0.018, 45);
 gs.span  = linspace(0.020, 0.050, 45);
 gs.beta  = deg2rad(linspace(5, 30, 45));
 gs.zdot0 = linspace(-1.0, -5.0, 45);
 
-% Coarser grid for the exhaustive 4-D optimum search
-g4.chord = linspace(0.006, 0.018, 7);
-g4.span  = linspace(0.020, 0.050, 7);
-g4.beta  = deg2rad(linspace(5, 30, 7));
-g4.zdot0 = linspace(-1.0, -5.0, 7);
+% Coarser grid for the exhaustive 3-D optimum search
+g3.span  = linspace(0.020, 0.050, 12);
+g3.beta  = deg2rad(linspace(5, 30, 12));
+g3.zdot0 = linspace(-1.0, -5.0, 12);
 
 %% ===== 3-D surfaces: choose any two variables for the xy-plane =====
 % Each call plots the hop (zdot_exit) and the retained spin (omega_exit) over
-% a variable pair, with the other two held at nominal.  The controller floor
-% is drawn and the best feasible point (max hop with omega_exit >= floor) is
+% a variable pair, with the third held at nominal.  The controller floor is
+% drawn and the best feasible point (max hop with omega_exit >= floor) is
 % marked.  Swap the first two arguments to view any other pair.
 surf_pair('beta','zdot0', gs, nom, params);    % strongest energy levers
-surf_pair('chord','span', gs, nom, params);    % geometry / area pair
+surf_pair('span','beta',  gs, nom, params);    % geometry pair
 
-%% ===== Global optimum across all four variables =====
-optimize_hop(g4, params);
+%% ===== Global optimum across all three variables =====
+optimize_hop(g3, params);
 
 % =========================================================================
 %  Helper functions
 % =========================================================================
 
 %% Run one case and return time series + exit values
-function [time, omega_t, zdot_t, omega_exit, zdot_exit, t_exit] = run_case(chord, span, beta, zdot0, p)
+function [time, omega_t, zdot_t, omega_exit, zdot_exit, t_exit] = run_case(span, beta, zdot0, p)
     [time, ~, zdot_t, omega_t, ~, zdot_exit, omega_exit, t_exit] = simulate_water_skipping( ...
-        chord, span, beta, p.N, p.rtip, p.m, p.I, p.rho, p.g, p.omega0, p.z0, zdot0, p.t, p.dt);
+        span, beta, p.N, p.rtip, p.m, p.I, p.rho, p.g, p.omega0, p.z0, zdot0, p.t, p.dt);
 end
 
 %% Sweep one variable, plot omega(t) and zdot(t) families, return exit metrics
@@ -117,7 +113,7 @@ function [exit_omega_deg, exit_zdot] = sweep_and_plot(field, vals, dispvals, fmt
         cse = nom;
         cse.(field) = vals(i);
         [time, omega_t, zdot_t, omega_exit, zdot_exit, t_exit] = ...
-            run_case(cse.chord, cse.span, cse.beta, cse.zdot0, params);
+            run_case(cse.span, cse.beta, cse.zdot0, params);
 
         % Skip only truly invalid runs (e.g. bad geometry -> length mismatch)
         if numel(omega_t) ~= numel(time)
@@ -160,7 +156,6 @@ end
 %% Display scaling and axis label for a given variable
 function [d, lab] = var_disp(field, v)
     switch field
-        case 'chord'; d = v*1e3;      lab = 'chord [mm]';
         case 'span';  d = v*1e3;      lab = 'span [mm]';
         case 'beta';  d = rad2deg(v); lab = '\beta [deg]';
         case 'zdot0'; d = v;          lab = 'z'' into water [m/s]';
@@ -180,7 +175,7 @@ function surf_pair(fieldX, fieldY, gridv, nom, params)
             cse = nom;
             cse.(fieldX) = vx(c);
             cse.(fieldY) = vy(r);
-            [~,~,~, we, ze, ~] = run_case(cse.chord, cse.span, cse.beta, cse.zdot0, params);
+            [~,~,~, we, ze, ~] = run_case(cse.span, cse.beta, cse.zdot0, params);
             if ~isnan(we)
                 Zhop(r,c)  = ze;
                 Zspin(r,c) = rad2deg(we);
@@ -232,22 +227,20 @@ function surf_pair(fieldX, fieldY, gridv, nom, params)
     end
 end
 
-%% Exhaustive 4-D search: max hop subject to omega_exit >= controller floor
+%% Exhaustive 3-D search: max hop subject to omega_exit >= controller floor
 function optimize_hop(g, params)
     omin_deg = rad2deg(params.omega_min);
-    ncases = numel(g.chord)*numel(g.span)*numel(g.beta)*numel(g.zdot0);
-    fprintf('\n4-D optimum search over %d designs...\n', ncases);
+    ncases = numel(g.span)*numel(g.beta)*numel(g.zdot0);
+    fprintf('\n3-D optimum search over %d designs...\n', ncases);
     best = -inf;  bopt = [];
-    for ic = 1:numel(g.chord)
-      fprintf('  chord %d/%d\n', ic, numel(g.chord));
-      for is = 1:numel(g.span)
-        for ib = 1:numel(g.beta)
-          for iz = 1:numel(g.zdot0)
-            [~,~,~, we, ze, ~] = run_case(g.chord(ic), g.span(is), g.beta(ib), g.zdot0(iz), params);
-            if ~isnan(we) && rad2deg(we) >= omin_deg && ze > best
-                best = ze;
-                bopt = [g.chord(ic), g.span(is), g.beta(ib), g.zdot0(iz), rad2deg(we)];
-            end
+    for is = 1:numel(g.span)
+      fprintf('  span %d/%d\n', is, numel(g.span));
+      for ib = 1:numel(g.beta)
+        for iz = 1:numel(g.zdot0)
+          [~,~,~, we, ze, ~] = run_case(g.span(is), g.beta(ib), g.zdot0(iz), params);
+          if ~isnan(we) && rad2deg(we) >= omin_deg && ze > best
+              best = ze;
+              bopt = [g.span(is), g.beta(ib), g.zdot0(iz), rad2deg(we)];
           end
         end
       end
@@ -258,18 +251,17 @@ function optimize_hop(g, params)
         fprintf('  No feasible design found in the search grid.\n');
     else
         fprintf('  z''_exit (hop)  = %.2f m/s   (hop height ~ %.0f mm)\n', best, 1000*best^2/(2*params.g));
-        fprintf('  chord          = %.1f mm\n', bopt(1)*1e3);
-        fprintf('  span           = %.1f mm\n', bopt(2)*1e3);
-        fprintf('  beta           = %.1f deg\n', rad2deg(bopt(3)));
-        fprintf('  zdot0 (entry)  = %.2f m/s\n', bopt(4));
-        fprintf('  omega_exit     = %.0f deg/s\n', bopt(5));
+        fprintf('  span           = %.1f mm\n', bopt(1)*1e3);
+        fprintf('  beta           = %.1f deg\n', rad2deg(bopt(2)));
+        fprintf('  zdot0 (entry)  = %.2f m/s\n', bopt(3));
+        fprintf('  omega_exit     = %.0f deg/s\n', bopt(4));
     end
 end
 
 %% Simulate one water contact (entry -> submerged -> exit)
 function [time, z_history, zdot_history, omega_history, ...
     z_exit, zdot_exit, omega_exit, t_exit] = simulate_water_skipping( ...
-    chord, span, beta, N, rtip, m, I, rho, g, omega0, z0, zdot0, t, dt)
+    span, beta, N, rtip, m, I, rho, g, omega0, z0, zdot0, t, dt)
 
     z = z0;  zdot = zdot0;  omega = omega0;
 
@@ -290,7 +282,7 @@ function [time, z_history, zdot_history, omega_history, ...
         end
 
         % Hydrodynamic vertical thrust and resisting torque
-        [T, Q] = compute_thrust_and_torque(chord, span, beta, N, rtip, rho, omega, z, zdot);
+        [T, Q] = compute_thrust_and_torque(span, beta, N, rtip, rho, omega, z, zdot);
 
         if isnan(T) || isnan(Q)
             time = t(1:k);
@@ -347,7 +339,7 @@ function [time, z_history, zdot_history, omega_history, ...
 end
 
 %% Total vertical thrust and resisting torque from N hydrofoils
-function [T_total, Q_total] = compute_thrust_and_torque(chord, span, beta, N, rtip, rho, omega, z, zdot)
+function [T_total, Q_total] = compute_thrust_and_torque(span, beta, N, rtip, rho, omega, z, zdot)
     % z >= 0 : foil above water, no force
     if z >= 0
         T_total = 0;  Q_total = 0;  return;
@@ -360,8 +352,9 @@ function [T_total, Q_total] = compute_thrust_and_torque(chord, span, beta, N, rt
         T_total = NaN;  Q_total = NaN;  return;     % invalid geometry
     end
 
-    % Effective submerged chord grows as the inclined plate penetrates
-    c_sub = min(h / sin(beta), chord);
+    % Submerged chord set purely by penetration depth: the foil is a slanted
+    % edge ejected before its chord is fully wetted, so there is no cap.
+    c_sub = h / sin(beta);
     if c_sub <= 0
         T_total = 0;  Q_total = 0;  return;
     end
