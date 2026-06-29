@@ -42,7 +42,7 @@ def wait_for_start(PJ: PygameJoystick):
 if __name__ == '__main__':
 
     # ---------------- user config ----------------
-    uri = 'radio://0/99/2M'
+    uri = 'radio://0/70/2M'
 
     sample_time = 0.01
 
@@ -67,12 +67,12 @@ if __name__ == '__main__':
     #   0-10 s: ramp thrust from 0 to 25000
     #   10-13 s: hold thrust at 25000
     #   >13 s: right stick adjusts thrust around 25000
-    MANUAL_BASE_THRUST = 30000
+    MANUAL_BASE_THRUST = 28000
     MANUAL_RAMP_TIME = 7.0
     MANUAL_HOLD_TIME = 3.0
     MANUAL_JOYSTICK_DELTA = 2000
-    MANUAL_THRUST_MIN = 24000
-    MANUAL_THRUST_MAX = 30000
+    MANUAL_THRUST_MIN = 20000
+    MANUAL_THRUST_MAX = 28000
 
     POSITION_GAIN = 0.3
 
@@ -639,9 +639,9 @@ if __name__ == '__main__':
                 #cmd_pitch = desired_y*1000
                 cmd_roll = JSL_x * 5
                 cmd_pitch = -JSL_y * 5
-                cmd_yaw = mocap_yaw_deg - 90
+                cmd_yaw = mocap_yaw_deg
                 bi_yaw_delay_deg = 0.0
-                bi_yaw_torque_cmd = 0.0
+                bi_yaw_torque_cmd = -0.5
 
 
             else:

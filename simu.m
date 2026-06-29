@@ -61,24 +61,34 @@ sweep_and_plot('span',  span_list,  span_list*1e3,     'span = %.0f mm',  nom, p
 sweep_and_plot('beta',  beta_list,  rad2deg(beta_list),'\\beta = %.0f deg',nom, params);
 sweep_and_plot('zdot0', zdot0_list, zdot0_list,        'z'' = %.1f m/s',   nom, params);
 
-%% ===== Optimization: grids for the 2-D surfaces and the 3-D search =====
-% Smooth grids for the 3-D surfaces (any two variables -> xy-plane)
+%% ===== Optimization: grids for the 2-D heatmaps and the 3-D search =====
+% Smooth grids for the 2-D heatmaps (any two variables -> xy-plane)
 gs.span  = linspace(0.020, 0.070, 45);
 gs.beta  = deg2rad(linspace(5, 50, 45));
 gs.zdot0 = linspace(-0.5, -5.0, 45);
 
 % Coarser grid for the exhaustive 3-D optimum search
-g3.span  = linspace(0.020, 0.070, 12);
-g3.beta  = deg2rad(linspace(5, 50, 12));
-g3.zdot0 = linspace(-0.5, -5.0, 12);
+g3.span  = linspace(0.020, 0.070, 10);
+g3.beta  = deg2rad(linspace(5, 50, 10));
+g3.zdot0 = linspace(-0.5, -5.0, 10);
 
-%% ===== 3-D surfaces: choose any two variables for the xy-plane =====
+% Grid for iso-color surfaces in the full 3-D design space
+giso.span  = linspace(0.020, 0.070, 18);
+giso.beta  = deg2rad(linspace(5, 50, 18));
+giso.zdot0 = linspace(-0.5, -5.0, 18);
+
+%% ===== 2-D heatmaps: choose any two variables for the xy-plane =====
 % Each call plots the hop (zdot_exit) and the retained spin (omega_exit) over
 % a variable pair, with the third held at nominal.  The controller floor is
-% drawn and the best feasible point (max hop with omega_exit >= floor) is
-% marked.  Swap the first two arguments to view any other pair.
-surf_pair('beta','zdot0', gs, nom, params);    % strongest energy levers
-surf_pair('span','beta',  gs, nom, params);    % geometry pair
+% drawn as a contour and the best feasible point (max hop with
+% omega_exit >= floor) is marked.  Swap the first two arguments to view any
+% other pair.
+heatmap_pair('beta','zdot0', gs, nom, params);    % strongest energy levers
+heatmap_pair('span','beta',  gs, nom, params);    % geometry pair
+
+%% ===== 4-D iso-color surface points: all three design variables at once =====
+% x/y/z are the three design variables; each point lies on a hop isosurface.
+isocolor_surface_points(giso, params);
 
 %% ===== Global optimum across all three variables =====
 optimize_hop(g3, params);
@@ -163,8 +173,15 @@ function [d, lab] = var_disp(field, v)
     end
 end
 
-%% 3-D surfaces of hop and retained spin over a pair of variables
-function surf_pair(fieldX, fieldY, gridv, nom, params)
+%% Sort vectors and matrix rows/columns so imagesc displays axes normally
+function [x_img, y_img, Z_img] = sort_for_heatmap(x, y, Z)
+    [x_img, ix] = sort(x(:).');
+    [y_img, iy] = sort(y(:));
+    Z_img = Z(iy, ix);
+end
+
+%% 2-D heatmaps of hop and retained spin over a pair of variables
+function heatmap_pair(fieldX, fieldY, gridv, nom, params)
     vx = gridv.(fieldX);  nX = numel(vx);
     vy = gridv.(fieldY);  nY = numel(vy);
     Zhop  = nan(nY, nX);   % zdot_exit  [m/s]
@@ -191,40 +208,180 @@ function surf_pair(fieldX, fieldY, gridv, nom, params)
     % Best feasible design in this slice (max hop with omega_exit >= floor)
     Zhop_feas = Zhop;
     Zhop_feas(isnan(Zspin) | Zspin < omin_deg) = NaN;
-    [best, idx] = max(Zhop_feas(:));
+    feasible_vals = Zhop_feas(:);
+    feasible_idx  = find(~isnan(feasible_vals));
+    if isempty(feasible_idx)
+        best = NaN;
+        idx  = 1;
+    else
+        [best, rel_idx] = max(feasible_vals(feasible_idx));
+        idx = feasible_idx(rel_idx);
+    end
 
-    % Fill non-hopping points with 0 so each surface spans the whole quadrant
+    % Fill non-hopping points with 0 so each heatmap spans the whole quadrant
     % (out to all four borders) instead of leaving holes.
     Zhop_plot  = Zhop;   Zhop_plot(isnan(Zhop_plot))   = 0;
     Zspin_plot = Zspin;  Zspin_plot(isnan(Zspin_plot)) = 0;
 
-    figure('Name', sprintf('Surfaces: %s vs %s', fieldX, fieldY));
+    [dx_img, dy_img, Zhop_img]  = sort_for_heatmap(dx, dy, Zhop_plot);
+    [~,      ~,      Zspin_img] = sort_for_heatmap(dx, dy, Zspin_plot);
+
+    figure('Name', sprintf('Heatmaps: %s vs %s', fieldX, fieldY));
     tiledlayout(1,2,'TileSpacing','compact','Padding','compact');
 
-    % --- Hop surface ---
-    nexttile;
-    surf(DX, DY, Zhop_plot, 'EdgeColor','none', 'FaceColor','interp'); hold on; grid on;
-    view(135,30); axis tight;
+    % --- Hop heatmap ---
+    ax1 = nexttile;
+    imagesc(ax1, dx_img, dy_img, Zhop_img); hold(ax1,'on'); grid(ax1,'on'); box(ax1,'on');
+    axis(ax1,'xy'); axis(ax1,'tight');
     if ~isnan(best)
-        plot3(DX(idx), DY(idx), best, 'rp', 'MarkerSize',16, 'MarkerFaceColor','r');
+        plot(ax1, DX(idx), DY(idx), 'rp', 'MarkerSize',14, 'MarkerFaceColor','r');
     end
-    xlabel(labx); ylabel(laby); zlabel('z''_{exit}  (hop) [m/s]');
-    title('Hop: exit vertical velocity  (0 = no hop)'); colorbar;
+    xlabel(ax1, labx); ylabel(ax1, laby);
+    title(ax1, 'Hop: exit vertical velocity  (0 = no hop)');
+    cb1 = colorbar(ax1); ylabel(cb1, 'z''_{exit} [m/s]');
 
-    % --- Retained-spin surface with controller floor plane ---
-    nexttile;
-    surf(DX, DY, Zspin_plot, 'EdgeColor','none', 'FaceColor','interp'); hold on; grid on;
-    view(135,30); axis tight;
-    surf(DX, DY, omin_deg*ones(nY,nX), 'FaceColor',[0.85 0.2 0.2], 'FaceAlpha',0.25, 'EdgeColor','none');
-    xlabel(labx); ylabel(laby); zlabel('\omega_{exit} [deg/s]');
-    title(sprintf('Retained spin (floor = %.0f deg/s;  0 = no hop)', omin_deg)); colorbar;
+    % --- Retained-spin heatmap with controller floor contour ---
+    ax2 = nexttile;
+    imagesc(ax2, dx_img, dy_img, Zspin_img); hold(ax2,'on'); grid(ax2,'on'); box(ax2,'on');
+    axis(ax2,'xy'); axis(ax2,'tight');
+    if any(Zspin_plot(:) <= omin_deg) && any(Zspin_plot(:) >= omin_deg)
+        contour(ax2, DX, DY, Zspin_plot, [omin_deg omin_deg], 'k--', 'LineWidth',1.5);
+    end
+    xlabel(ax2, labx); ylabel(ax2, laby);
+    title(ax2, sprintf('Retained spin (black contour = %.0f deg/s;  0 = no hop)', omin_deg));
+    cb2 = colorbar(ax2); ylabel(cb2, '\omega_{exit} [deg/s]');
 
     if ~isnan(best)
-        fprintf('[surf %s vs %s] best feasible hop z''_exit = %.2f m/s at %s = %.3g, %s = %.3g\n', ...
+        fprintf('[heatmap %s vs %s] best feasible hop z''_exit = %.2f m/s at %s = %.3g, %s = %.3g\n', ...
             fieldX, fieldY, best, strtrim(labx), DX(idx), strtrim(laby), DY(idx));
     else
-        fprintf('[surf %s vs %s] no feasible point in this slice\n', fieldX, fieldY);
+        fprintf('[heatmap %s vs %s] no feasible point in this slice\n', fieldX, fieldY);
     end
+end
+
+%% Points sampled from iso-color surfaces in the full design space
+function isocolor_surface_points(g, params)
+    omin_deg = rad2deg(params.omega_min);
+    nS = numel(g.span);
+    nB = numel(g.beta);
+    nZ = numel(g.zdot0);
+    ncases = nS*nB*nZ;
+
+    span_grid = g.span*1e3;
+    beta_grid = rad2deg(g.beta);
+    zdot_grid = g.zdot0;
+    HopFeasVol = zeros(nB,nS,nZ);  % feasible hop, with omega_exit >= floor
+    SpinVol = zeros(nB,nS,nZ);     % all valid exits, 0 = no exit
+
+    fprintf('\n4-D iso-color surface evaluation over %d designs...\n', ncases);
+    for is = 1:nS
+      for ib = 1:nB
+        for iz = 1:nZ
+          [~,~,~, we, ze, ~] = run_case(g.span(is), g.beta(ib), g.zdot0(iz), params);
+          if ~isnan(we)
+              spin_deg = rad2deg(we);
+              SpinVol(ib,is,iz) = spin_deg;
+              if spin_deg >= omin_deg
+                  HopFeasVol(ib,is,iz) = max(ze, 0);
+              end
+          end
+        end
+      end
+    end
+
+    fig = figure('Name','4D Iso-color Surface Panels: hop and omega', ...
+        'Color','w', 'Units','centimeters', 'Position',[2 2 22.0 10.4]);
+    tl = tiledlayout(fig, 1, 2, 'TileSpacing','compact', 'Padding','compact');
+
+    ax1 = nexttile(tl, 1);
+    plot_isosurface_points(ax1, span_grid, beta_grid, zdot_grid, HopFeasVol, SpinVol, ...
+        'z''_{exit} [m/s]', '[hop isosurfaces]', '%.2f', 'm/s');
+
+    ax2 = nexttile(tl, 2);
+    plot_isosurface_points(ax2, span_grid, beta_grid, zdot_grid, SpinVol, SpinVol, ...
+        '\omega_{exit} [deg/s]', '[omega isosurfaces]', '%.0f', 'deg/s');
+end
+
+%% Draw iso-value surfaces as colored point clouds
+function plot_isosurface_points(ax, span_grid, beta_grid, zdot_grid, ValueVol, SpinVol, cb_label, prefix, level_fmt, units)
+    valid_values = ValueVol(ValueVol > 0);
+    hold(ax,'on'); grid(ax,'on'); box(ax,'on');
+    set(ax, 'Color','w', 'GridAlpha',0.18, 'LineWidth',0.55, ...
+        'FontSize',8, 'FontName','Arial', 'TickDir','out');
+    colormap(ax, parula);
+
+    if isempty(valid_values)
+        text(ax, 0.5, 0.5, 0.5, 'No iso-surfaces found');
+        colorbar(ax);
+        fprintf('%s no positive values in this grid\n', prefix);
+    else
+        vmin = min(valid_values);
+        vmax = max(valid_values);
+        [SPAN, BETA, ZDOT] = meshgrid(span_grid, beta_grid, zdot_grid);
+
+        sorted_values = sort(valid_values(:));
+        q = [0.18 0.35 0.52 0.69 0.86 0.96];
+        level_idx = max(1, min(numel(sorted_values), round(q*numel(sorted_values))));
+        levels = unique(sorted_values(level_idx));
+
+        clim(ax, [vmin vmax]);
+        cb = colorbar(ax);
+        cb.FontSize = 8;
+        cb.FontName = 'Arial';
+        cb.LineWidth = 0.55;
+        ylabel(cb, cb_label, 'FontSize',9, 'FontName','Arial');
+
+        cmap = colormap(ax);
+        max_points_per_level = 900;
+        for il = 1:numel(levels)
+            lev = levels(il);
+            fv = isosurface(SPAN, BETA, ZDOT, ValueVol, lev);
+            if isempty(fv.faces) || isempty(fv.vertices)
+                continue;
+            end
+
+            cidx = 1 + round((lev - vmin) / (vmax - vmin) * (size(cmap,1)-1));
+            cidx = min(max(cidx, 1), size(cmap,1));
+            level_color = cmap(cidx,:);
+            patch(ax, 'Faces',fv.faces, 'Vertices',fv.vertices, ...
+                'FaceColor',level_color, 'FaceAlpha',0.035, 'EdgeColor','none');
+
+            faces = fv.faces;
+            verts = fv.vertices;
+            pts = (verts(faces(:,1),:) + verts(faces(:,2),:) + verts(faces(:,3),:)) / 3;
+            if size(pts,1) > max_points_per_level
+                keep = round(linspace(1, size(pts,1), max_points_per_level));
+                pts = pts(keep,:);
+            end
+
+            level_norm = (lev - vmin) / (vmax - vmin);
+            marker_size = 8 + 34*level_norm.^1.7;
+            h_iso = scatter3(ax, pts(:,1), pts(:,2), pts(:,3), ...
+                marker_size, lev*ones(size(pts,1),1), 'o', 'LineWidth',0.45);
+            h_iso.MarkerFaceColor = 'none';
+            h_iso.MarkerEdgeAlpha = 0.86;
+        end
+
+        [best, idx] = max(ValueVol(:));
+        [ib, is, iz] = ind2sub(size(ValueVol), idx);
+
+        level_text = sprintf([level_fmt ' '], levels);
+        fprintf('%s levels = %s%s\n', prefix, level_text, units);
+        fprintf('%s max value = %.3g %s at span = %.1f mm, beta = %.1f deg, zdot0 = %.2f m/s, omega_exit = %.0f deg/s\n', ...
+            prefix, best, units, span_grid(is), beta_grid(ib), zdot_grid(iz), SpinVol(ib,is,iz));
+    end
+
+    xlabel(ax, 'span [mm]', 'FontSize',9, 'FontName','Arial');
+    ylabel(ax, '\beta [deg]', 'FontSize',9, 'FontName','Arial');
+    zlabel(ax, 'z'' into water [m/s]', 'FontSize',9, 'FontName','Arial');
+    xpad = 0.04 * (max(span_grid) - min(span_grid));
+    ypad = 0.04 * (max(beta_grid) - min(beta_grid));
+    zpad = 0.04 * (max(zdot_grid) - min(zdot_grid));
+    xlim(ax, [min(span_grid)-xpad max(span_grid)+xpad]);
+    ylim(ax, [min(beta_grid)-ypad max(beta_grid)+ypad]);
+    zlim(ax, [min(zdot_grid)-zpad max(zdot_grid)+zpad]);
+    view(ax, 135, 20);
+    pbaspect(ax, [1.1 1 0.82]);
 end
 
 %% Exhaustive 3-D search: max hop subject to omega_exit >= controller floor
