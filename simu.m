@@ -13,6 +13,8 @@ clear; clc; close all;
 %  a model parameter.  All other parameters are held constant.
 % =========================================================================
 
+RUN_FIXED_SPAN_SCATTER_ONLY = true;   % true: only generate the fixed-span beta-zdot figure
+
 %% ===== Fixed parameters (held constant) =====
 N    = 4;            % number of hydrofoils
 rtip = 7e-2;         % hydrofoil tip radius [m]
@@ -49,12 +51,21 @@ zdot0_list = [-1.0 -1.5 -2.0 -3.0];            % m/s
 params = struct('N',N,'rtip',rtip,'m',m,'I',I,'rho',rho,'g',g, ...
                 'omega0',omega0,'omega_min',omega_min,'z0',z0,'t',t,'dt',dt);
 
+%% ===== Fast path: fixed-span beta-zdot plane colored by exit speed =====
+if RUN_FIXED_SPAN_SCATTER_ONLY
+    plot_fixed_span_exit_speed_scatter(0.020, params);
+    return;
+end
+
 %% ===== Report nominal-case result =====
 [~,~,~,we_nom,ze_nom,te_nom] = run_case(nom.span,nom.beta,nom.zdot0,params);
 fprintf('\nNominal case (span=%.0f mm, beta=%.0f deg, zdot0=%.1f m/s):\n', ...
     nom.span*1e3, rad2deg(nom.beta), nom.zdot0);
 fprintf('  omega_exit = %.0f deg/s (min %.0f),  zdot_exit = %.3f m/s,  t_contact = %.2f ms\n', ...
     rad2deg(we_nom), rad2deg(omega_min), ze_nom, te_nom*1e3);
+
+%% ===== Specific entry-to-exit case requested for reporting =====
+plot_entry_exit_case(0.040, deg2rad(30), -3.0, params);
 
 %% ===== Three one-at-a-time sweeps (time-series of omega and zdot) =====
 sweep_and_plot('span',  span_list,  span_list*1e3,     'span = %.0f mm',  nom, params);
@@ -101,6 +112,382 @@ optimize_hop(g3, params);
 function [time, omega_t, zdot_t, omega_exit, zdot_exit, t_exit] = run_case(span, beta, zdot0, p)
     [time, ~, zdot_t, omega_t, ~, zdot_exit, omega_exit, t_exit] = simulate_water_skipping( ...
         span, beta, p.N, p.rtip, p.m, p.I, p.rho, p.g, p.omega0, p.z0, zdot0, p.t, p.dt);
+end
+
+%% Fixed-span beta-zdot plane with trajectories colored by exit speed
+function plot_fixed_span_exit_speed_scatter(span_fixed, params)
+    beta_min = 25;   beta_max = 65;  % deg
+    zin_min  = -5.0; zin_max  = -1.0; % m/s
+    n_beta = 3;
+    n_zin = 3;
+
+    [B, Zin] = meshgrid(linspace(beta_min, beta_max, n_beta), ...
+                        linspace(zin_min, zin_max, n_zin));
+    beta_deg = B(:);
+    zdot_in = Zin(:);
+    n_cases = numel(beta_deg);
+
+    data = struct('valid',{}, 'exit',{}, 'beta_deg',{}, 'zdot_in',{}, ...
+                  't_ms',{}, 'zdot',{}, 'omega_deg',{}, 'zdot_exit',{});
+    zexit = nan(n_cases, 1);
+    color_metric = nan(n_cases, 1);
+    success = false(n_cases, 1);
+    x_end = 0;
+
+    fprintf('\nFixed-span beta-zdot plane trajectories (span = %.0f mm):\n', span_fixed*1e3);
+    for k = 1:n_cases
+        [time, omega_t, zdot_t, omega_exit, zdot_exit, ~] = ...
+            run_case(span_fixed, deg2rad(beta_deg(k)), zdot_in(k), params);
+
+        data(k).valid = numel(omega_t) == numel(time);
+        data(k).exit = data(k).valid && ~isnan(omega_exit);
+        data(k).beta_deg = beta_deg(k);
+        data(k).zdot_in = zdot_in(k);
+
+        if data(k).valid
+            data(k).t_ms = time(:) * 1e3;
+            data(k).zdot = zdot_t(:);
+            data(k).omega_deg = rad2deg(omega_t(:));
+            color_metric(k) = max(data(k).zdot);
+            x_end = max(x_end, max(data(k).t_ms));
+        end
+
+        if data(k).exit
+            data(k).zdot_exit = zdot_exit;
+            zexit(k) = zdot_exit;
+            color_metric(k) = zdot_exit;
+            success(k) = true;
+        end
+    end
+
+    fprintf('  successful exits = %d / %d\n', nnz(success), n_cases);
+    fprintf('  no exit          = %d / %d\n', nnz(~success), n_cases);
+    if ~any(success)
+        warning('No successful exits were found for the selected fixed-span plane samples.');
+        return;
+    end
+
+    zmin = min(zexit(success));
+    zmax = max(zexit(success));
+    fprintf('  z''_exit range   = %.2f to %.2f m/s\n', zmin, zmax);
+
+    base_cmap = turbo(256);
+    case_colors = base_cmap(round(linspace(34, 224, n_cases)), :);
+
+    valid_flags = [data.valid].';
+    exit_flags = [data.exit].';
+    success_idx = find(valid_flags & exit_flags);
+    fail_idx = find(valid_flags & ~exit_flags);
+    x_end_success = 0;
+    x_end_fail = 0;
+    for k = success_idx(:).'
+        x_end_success = max(x_end_success, max(data(k).t_ms));
+    end
+    for k = fail_idx(:).'
+        x_end_fail = max(x_end_fail, max(data(k).t_ms));
+    end
+
+    fig = figure('Name','Fixed-span beta-zdot plane trajectories', ...
+        'Color','w', 'Units','centimeters', 'Position',[2 2 24.0 7.0], ...
+        'PaperUnits','centimeters', 'PaperSize',[24.0 7.0], ...
+        'PaperPosition',[0 0 24.0 7.0], 'PaperPositionMode','manual');
+
+    ax_exit = axes(fig, 'Position',[0.055 0.17 0.255 0.75]);
+    hold(ax_exit,'on'); grid(ax_exit,'on');
+    format_journal_axis(ax_exit);
+    yyaxis(ax_exit,'left');
+    for k = success_idx(:).'
+        clr = case_colors(k,:);
+        plot(ax_exit, data(k).t_ms, data(k).zdot, '-', ...
+            'Color',clr, 'LineWidth',1.15);
+        plot(ax_exit, data(k).t_ms(end), data(k).zdot(end), 'o', ...
+            'Color',clr, 'MarkerFaceColor',clr, 'MarkerSize',4.0);
+    end
+    yline(ax_exit, 0, ':', 'Color',[0.45 0.45 0.45], 'LineWidth',0.75);
+    ylabel(ax_exit, 'z''(t) [m s^{-1}]');
+    yyaxis(ax_exit,'right');
+    for k = success_idx(:).'
+        clr = case_colors(k,:);
+        plot(ax_exit, data(k).t_ms, data(k).omega_deg, '--', ...
+            'Color',clr, 'LineWidth',1.00);
+        plot(ax_exit, data(k).t_ms(end), data(k).omega_deg(end), 'o', ...
+            'Color',clr, 'MarkerFaceColor',clr, 'MarkerSize',4.0);
+    end
+    yline(ax_exit, rad2deg(params.omega_min), '--', ...
+        'Color',[0.45 0.45 0.45], 'LineWidth',0.75);
+    ylabel(ax_exit, '\omega(t) [deg s^{-1}]');
+    xlabel(ax_exit, 'time from water entry, t [ms]');
+    xlim(ax_exit, [0 max(x_end_success * 1.08, x_end_success + 0.5)]);
+    ax_exit.YAxis(1).Color = [0.18 0.18 0.18];
+    ax_exit.YAxis(2).Color = [0.18 0.18 0.18];
+
+    ax_fail = axes(fig, 'Position',[0.435 0.17 0.255 0.75]);
+    hold(ax_fail,'on'); grid(ax_fail,'on');
+    format_journal_axis(ax_fail);
+    yyaxis(ax_fail,'left');
+    for k = fail_idx(:).'
+        clr = case_colors(k,:);
+        plot(ax_fail, data(k).t_ms, data(k).zdot, '-', ...
+            'Color',clr, 'LineWidth',1.15);
+        plot(ax_fail, data(k).t_ms(end), data(k).zdot(end), 'x', ...
+            'Color',clr, 'MarkerSize',5.5, 'LineWidth',1.0);
+    end
+    yline(ax_fail, 0, ':', 'Color',[0.45 0.45 0.45], 'LineWidth',0.75);
+    ylabel(ax_fail, 'z''(t) [m s^{-1}]');
+    yyaxis(ax_fail,'right');
+    for k = fail_idx(:).'
+        clr = case_colors(k,:);
+        plot(ax_fail, data(k).t_ms, data(k).omega_deg, '--', ...
+            'Color',clr, 'LineWidth',1.00);
+        plot(ax_fail, data(k).t_ms(end), data(k).omega_deg(end), 'x', ...
+            'Color',clr, 'MarkerSize',5.5, 'LineWidth',1.0);
+    end
+    yline(ax_fail, rad2deg(params.omega_min), '--', ...
+        'Color',[0.45 0.45 0.45], 'LineWidth',0.75);
+    ylabel(ax_fail, '\omega(t) [deg s^{-1}]');
+    xlabel(ax_fail, 'time from water entry, t [ms]');
+    xlim(ax_fail, [0 max(x_end_fail * 1.05, x_end_fail + 0.5)]);
+    ax_fail.YAxis(1).Color = [0.18 0.18 0.18];
+    ax_fail.YAxis(2).Color = [0.18 0.18 0.18];
+
+    add_parameter_label_panel(fig, data, case_colors, valid_flags);
+
+    drawnow;
+    add_top_border(fig, ax_exit);
+    add_top_border(fig, ax_fail);
+end
+
+function format_journal_axis(ax)
+    set(ax, 'FontName','Arial', 'FontSize',8.2, 'LineWidth',0.75, ...
+        'Box','off', ...
+        'TickDir','out', 'Layer','top', 'XMinorTick','on', 'YMinorTick','on', ...
+        'GridColor',[0.82 0.82 0.82], 'GridAlpha',0.42, ...
+        'MinorGridColor',[0.92 0.92 0.92], 'MinorGridAlpha',0.16);
+end
+
+function add_top_border(fig, ax)
+    old_units = ax.Units;
+    ax.Units = 'normalized';
+    pos = ax.Position;
+    ax.Units = old_units;
+    annotation(fig, 'line', [pos(1) pos(1)+pos(3)], ...
+        [pos(2)+pos(4) pos(2)+pos(4)], ...
+        'Color',[0.18 0.18 0.18], 'LineWidth',0.75);
+end
+
+function add_parameter_label_panel(fig, data, case_colors, valid_flags)
+    ax_label = axes(fig, 'Position',[0.785 0.17 0.205 0.75]);
+    hold(ax_label,'on');
+    axis(ax_label, 'off');
+    xlim(ax_label, [0 1.45]);
+    ylim(ax_label, [0 1]);
+
+    idx = find(valid_flags);
+    y_pos = linspace(0.92, 0.08, numel(idx));
+    for ii = 1:numel(idx)
+        k = idx(ii);
+        clr = case_colors(k,:);
+        plot(ax_label, [0.02 0.24], [y_pos(ii) y_pos(ii)], '-', ...
+            'Color',clr, 'LineWidth',2.2);
+        label = sprintf('\\beta=%.0f^\\circ, z''_{in}=%.0f', ...
+            data(k).beta_deg, data(k).zdot_in);
+        text(ax_label, 0.30, y_pos(ii), label, 'Interpreter','tex', ...
+            'FontName','Arial', 'FontSize',6.6, 'Color',[0.18 0.18 0.18], ...
+            'HorizontalAlignment','left', 'VerticalAlignment','middle');
+    end
+end
+
+%% Plot requested entry-to-exit case with comparison cases, including failures
+function plot_entry_exit_case(span, beta, zdot0, params)
+    cases = struct( ...
+        'span',  {span, 0.065, 0.030, 0.030, 0.020}, ...
+        'beta',  {beta, deg2rad(10), deg2rad(30), deg2rad(50), deg2rad(50)}, ...
+        'zdot0', {zdot0, -1.5, -2.5, -5.0, -5.0}, ...
+        'label', {'S1 40/30/-3', 'S2 65/10/-1.5', 'S3 30/30/-2.5', ...
+                  'F1 30/50/-5', 'F2 20/50/-5'});
+
+    gray = [0.42 0.42 0.42];
+    black = [0.18 0.18 0.18];
+    case_colors = [ ...
+        0.00 0.28 0.80;  % S1: blue
+        0.86 0.18 0.12;  % S2: red-orange
+        0.00 0.55 0.25;  % S3: green
+        0.55 0.20 0.75;  % F1: purple
+        0.90 0.58 0.00]; % F2: amber
+    omega_style = '-';
+    zdot_style  = '--';
+    line_widths = [1.65 1.45 1.45 1.45 1.45];
+
+    data = struct('valid',{}, 'exit',{}, 't_ms',{}, 'omega_deg',{}, ...
+                  'zdot',{}, 'omega_exit',{}, 'zdot_exit',{}, 't_exit',{});
+    all_omega = rad2deg(params.omega_min);
+    all_zdot = 0;
+    x_end = 0;
+
+    fprintf('\nEntry-to-exit comparison cases:\n');
+    for i = 1:numel(cases)
+        [time, omega_t, zdot_t, omega_exit, zdot_exit, t_exit] = ...
+            run_case(cases(i).span, cases(i).beta, cases(i).zdot0, params);
+
+        data(i).valid = numel(omega_t) == numel(time);
+        if ~data(i).valid
+            fprintf('  %-15s : invalid geometry\n', cases(i).label);
+            continue;
+        end
+
+        data(i).exit = ~isnan(omega_exit);
+        data(i).t_ms = time(:) * 1e3;
+        data(i).omega_deg = rad2deg(omega_t(:));
+        data(i).zdot = zdot_t(:);
+        data(i).omega_exit = omega_exit;
+        data(i).zdot_exit = zdot_exit;
+        data(i).t_exit = t_exit;
+
+        all_omega = [all_omega; data(i).omega_deg]; %#ok<AGROW>
+        all_zdot = [all_zdot; data(i).zdot]; %#ok<AGROW>
+        x_end = max(x_end, max(data(i).t_ms));
+
+        if data(i).exit
+            fprintf('  %-15s : EXIT, omega_exit = %.0f deg/s, z''_exit = %+.2f m/s, t = %.1f ms\n', ...
+                cases(i).label, rad2deg(omega_exit), zdot_exit, t_exit*1e3);
+        else
+            fprintf('  %-15s : NO EXIT, final omega = %.0f deg/s, final z'' = %+.2f m/s, t = %.1f ms\n', ...
+                cases(i).label, rad2deg(omega_t(end)), zdot_t(end), time(end)*1e3);
+        end
+    end
+
+    fig = figure('Name','Entry-to-exit case: span40 beta30 zdot-3', ...
+        'Color','w', 'Units','centimeters', 'Position',[2 2 18.0 8.0], ...
+        'PaperUnits','centimeters', 'PaperSize',[18.0 8.0], ...
+        'PaperPosition',[0 0 18.0 8.0], 'PaperPositionMode','manual');
+
+    axis_pos = [0.105 0.30 0.765 0.60];
+    ax = axes(fig, 'Position',axis_pos);
+    hold(ax,'on'); grid(ax,'on'); box(ax,'off');
+    set(ax, 'FontName','Arial', 'FontSize',8.5, 'LineWidth',0.75, ...
+        'TickDir','out', 'Layer','top', 'XMinorTick','on', 'YMinorTick','on', ...
+        'GridColor',[0.80 0.80 0.80], 'GridAlpha',0.45, ...
+        'MinorGridColor',[0.90 0.90 0.90], 'MinorGridAlpha',0.18);
+
+    x_label = x_end * 1.025;
+    xlim(ax, [0 max(x_end * 1.10, x_end + 0.5)]);
+
+    omega_min_deg = rad2deg(params.omega_min);
+    omega_span = max(all_omega) - min([all_omega; omega_min_deg]);
+    omega_pad = max(120, 0.10 * omega_span);
+    omega_ylim = [max(0, floor((min([all_omega; omega_min_deg]) - omega_pad) / 100) * 100), ...
+                  ceil((max(all_omega) + omega_pad) / 100) * 100];
+
+    zdot_span = max([all_zdot; 0]) - min([all_zdot; 0]);
+    zdot_pad = max(0.25, 0.10 * zdot_span);
+    zdot_ylim = [floor((min([all_zdot; 0]) - zdot_pad) * 2) / 2, ...
+                 ceil((max([all_zdot; 0]) + zdot_pad) * 2) / 2];
+
+    yyaxis(ax,'left');
+    zdot_to_omega_axis = @(v) omega_ylim(1) + ...
+        (v - zdot_ylim(1)) ./ diff(zdot_ylim) .* diff(omega_ylim);
+    if data(1).valid
+        hshade = fill(ax, [data(1).t_ms; flipud(data(1).t_ms)], ...
+            [zdot_to_omega_axis(data(1).zdot); ...
+             flipud(zdot_to_omega_axis(zeros(size(data(1).zdot))))], ...
+            [0.88 0.88 0.88], 'EdgeColor','none', 'FaceAlpha',0.42, ...
+            'HandleVisibility','off');
+        uistack(hshade, 'bottom');
+    end
+
+    for i = 1:numel(cases)
+        if ~data(i).valid
+            continue;
+        end
+        case_color = case_colors(i,:);
+        plot(ax, data(i).t_ms, data(i).omega_deg, omega_style, ...
+            'LineWidth',line_widths(i), 'Color',case_color, 'HandleVisibility','off');
+        if data(i).exit
+            plot(ax, data(i).t_ms(end), data(i).omega_deg(end), 'o', ...
+                'MarkerSize',4.2, 'MarkerEdgeColor',case_color, ...
+                'MarkerFaceColor',case_color, 'HandleVisibility','off');
+        else
+            plot(ax, data(i).t_ms(end), data(i).omega_deg(end), 'x', ...
+                'MarkerSize',6.0, 'LineWidth',1.1, 'Color',case_color, ...
+                'HandleVisibility','off');
+        end
+    end
+    ylim(ax, omega_ylim);
+    ylabel(ax, '\omega [deg s^{-1}]', 'Color',black);
+    yline(ax, omega_min_deg, '--', 'Color',gray, 'LineWidth',0.75, 'HandleVisibility','off');
+    text(ax, x_label, data(1).omega_deg(end), '\omega', 'Color',black, ...
+        'FontName','Arial', 'FontSize',9, 'FontWeight','bold', ...
+        'HorizontalAlignment','left', 'VerticalAlignment','middle');
+    text(ax, x_end * 0.98, omega_min_deg + 0.025 * diff(omega_ylim), ...
+        '\omega_{min}', 'Color',gray, 'FontName','Arial', 'FontSize',7.5, ...
+        'HorizontalAlignment','right', 'VerticalAlignment','bottom', ...
+        'BackgroundColor','w', 'Margin',1);
+
+    yyaxis(ax,'right');
+    for i = 1:numel(cases)
+        if ~data(i).valid
+            continue;
+        end
+        case_color = case_colors(i,:);
+        plot(ax, data(i).t_ms, data(i).zdot, zdot_style, ...
+            'LineWidth',line_widths(i), 'Color',case_color, 'HandleVisibility','off');
+        if data(i).exit
+            plot(ax, data(i).t_ms(end), data(i).zdot(end), 's', ...
+                'MarkerSize',4.2, 'MarkerEdgeColor',case_color, ...
+                'MarkerFaceColor','w', 'HandleVisibility','off');
+        else
+            plot(ax, data(i).t_ms(end), data(i).zdot(end), 'x', ...
+                'MarkerSize',6.0, 'LineWidth',1.1, 'Color',case_color, ...
+                'HandleVisibility','off');
+        end
+    end
+    ylim(ax, zdot_ylim);
+    ylabel(ax, 'z'' [m s^{-1}]', 'Color',black);
+    yline(ax, 0, ':', 'Color',gray, 'LineWidth',0.85, 'HandleVisibility','off');
+    text(ax, x_label, data(1).zdot(end), 'z''', 'Color',black, ...
+        'FontName','Arial', 'FontSize',9, 'FontWeight','bold', ...
+        'HorizontalAlignment','left', 'VerticalAlignment','middle');
+    text(ax, x_end * 0.82, 0 + 0.055 * diff(zdot_ylim), ...
+        'z'' = 0', 'Color',gray, 'FontName','Arial', 'FontSize',7.5, ...
+        'HorizontalAlignment','right', 'VerticalAlignment','bottom');
+
+    yyaxis(ax,'left');
+    xlabel(ax, 'time from water entry, t [ms]');
+    ax.YAxis(1).Color = black;
+    ax.YAxis(2).Color = black;
+
+    if data(1).exit
+        exit_ms = data(1).t_exit * 1e3;
+        xline(ax, exit_ms, '--', 'Color',[0.10 0.10 0.10], ...
+            'LineWidth',0.85, 'HandleVisibility','off');
+    end
+
+    legend_handles = gobjects(1, numel(cases) + 2);
+    legend_labels = cell(1, numel(cases) + 2);
+    legend_handles(1) = plot(ax, NaN, NaN, omega_style, ...
+        'Color',black, 'LineWidth',1.45);
+    legend_labels{1} = '\omega';
+    legend_handles(2) = plot(ax, NaN, NaN, zdot_style, ...
+        'Color',black, 'LineWidth',1.45);
+    legend_labels{2} = 'z''';
+    for i = 1:numel(cases)
+        legend_handles(i+2) = plot(ax, NaN, NaN, '-', ...
+            'Color',case_colors(i,:), 'LineWidth',line_widths(i));
+        if data(i).valid && data(i).exit
+            legend_labels{i+2} = [cases(i).label ' exit'];
+        else
+            legend_labels{i+2} = [cases(i).label ' no exit'];
+        end
+    end
+    lgd = legend(ax, legend_handles, legend_labels, 'Location','southoutside', ...
+        'NumColumns',4, 'Box','off', 'FontSize',6.8);
+    lgd.ItemTokenSize = [16 8];
+    lgd.Units = 'normalized';
+    lgd.Position = [0.165 0.040 0.70 0.115];
+    ax.Position = axis_pos;
+
+    annotation(fig, 'rectangle', axis_pos, ...
+        'Color',[0.15 0.15 0.15], 'LineWidth',0.75);
 end
 
 %% Sweep one variable, plot omega(t) and zdot(t) families, return exit metrics
