@@ -287,7 +287,7 @@ title('R13 Tracking');
 legend('R13 raw', 'R13 filtered', 'mocap\_x','cmd_x');
 
 subplot(2,1,2);
-plot(Abs_time, R23, 'LineWidth', 1.0);
+plot(Abs_time, R23*100, 'LineWidth', 1.0);
 hold on;
 plot(Abs_time, R23_filt*1000, 'LineWidth', 1.8);
 plot(Abs_time, mocap_y_filt*1000, '--', 'LineWidth', 1.5);

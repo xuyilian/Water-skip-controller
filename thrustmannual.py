@@ -67,7 +67,7 @@ if __name__ == '__main__':
     #   0-10 s: ramp thrust from 0 to 25000
     #   10-13 s: hold thrust at 25000
     #   >13 s: right stick adjusts thrust around 25000
-    MANUAL_BASE_THRUST = 28000
+    MANUAL_BASE_THRUST = 33000
     MANUAL_RAMP_TIME = 7.0
     MANUAL_HOLD_TIME = 3.0
     MANUAL_JOYSTICK_DELTA = 2000
@@ -134,11 +134,11 @@ if __name__ == '__main__':
         z_ki=0,
         z_kd=5000,
         z_int_limit=1,
-        xy_kp=0.2,
+        xy_kp=0.1,
         xy_kd=0.15)
 
     JBI = JoyBiController(
-        r13_r23_kp=-6.0,
+        r13_r23_kp=-10.0,
         xy_cmd_limit=120.0,
         thrust_base=49000,
         thrust_min=3000,
@@ -637,40 +637,27 @@ if __name__ == '__main__':
                 # only thrust is used
                 #cmd_roll = desired_x*1000
                 #cmd_pitch = desired_y*1000
-                cmd_roll = JSL_x * 5
-                cmd_pitch = -JSL_y * 5
-                cmd_yaw = mocap_yaw_deg
+                cmd_roll = JSL_x
+                cmd_pitch = -JSL_y
+                cmd_yaw = mocap_yaw_deg + 100
                 bi_yaw_delay_deg = 0.0
-                bi_yaw_torque_cmd = -0.5
+                bi_yaw_torque_cmd = 0
 
 
             else:
                 # First-order P controller:
                 # desired_x tracks R13, desired_y tracks R23.
                 # cmd_roll is U_X, cmd_pitch is U_Y for firmware BI mode.
+                #cmd_thrust = BI.thrust_flight
+                #cmd_roll = BI.roll_flight
+                #cmd_pitch = BI.pitch_flight
+                #cmd_yaw = BI.yaw_flight + 100
+                bi_yaw_torque_cmd = 0
+
                 cmd_thrust = BI.thrust_flight
-                cmd_roll = BI.roll_flight
-                cmd_pitch = BI.pitch_flight
-                if BI_USE_DYNAMIC_YAW_DELAY_DEG:
-                    bi_yaw_delay_deg = BI_YAW_DELAY_SIGN * saturation(
-                        yawrate_deg_filt * BI_MOTOR_RESPONSE_DELAY_S,
-                        BI_YAW_DELAY_DEG_LIMIT,
-                        -BI_YAW_DELAY_DEG_LIMIT,
-                    )
-                else:
-                    bi_yaw_delay_deg = BI_YAW_DELAY_SIGN * saturation(
-                        BI_FIXED_YAW_DELAY_DEG,
-                        BI_YAW_DELAY_DEG_LIMIT,
-                        -BI_YAW_DELAY_DEG_LIMIT,
-                    )
-
-                cmd_yaw = BI.yaw_flight + bi_yaw_delay_deg
-                bi_yaw_torque_cmd = BI_YAW_TORQUE_CMD
-
-                #cmd_thrust = JBI.thrust_flight
-                #cmd_roll   = JBI.roll_flight
-                #cmd_pitch  = JBI.pitch_flight
-                #cmd_yaw    = JBI.yaw_flight
+                cmd_roll   = JBI.roll_flight
+                cmd_pitch  = JBI.pitch_flight
+                cmd_yaw    = JBI.yaw_flight + 90
 
                 #cmd_thrust = FBI.thrust_flight
                 #cmd_roll = FBI.roll_flight
