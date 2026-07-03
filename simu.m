@@ -54,7 +54,7 @@ params = struct('N',N,'m',m,'I',I,'rho',rho,'g',g, ...
 
 %% ===== Fast path: fixed-rtip beta-zdot plane colored by exit speed =====
 if RUN_FIXED_RTIP_SCATTER_ONLY
-    plot_fixed_rtip_exit_speed_scatter(0.020, params);
+    plot_fixed_rtip_exit_speed_scatter(0.070, params);
     return;
 end
 
