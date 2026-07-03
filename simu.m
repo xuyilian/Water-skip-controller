@@ -5,7 +5,8 @@ clear; clc; close all;
 %  Predicts the spin (omega) and vertical velocity (zdot) of the vehicle
 %  through one water contact (entry -> submerged -> exit), and sweeps the
 %  three engineering variables we can change:
-%       1) span    (hydrofoil radial span; rroot = rtip - span)
+%       1) rtip    (hydrofoil tip radius; the foil extends from the axis of
+%                   rotation, so its radial span equals rtip)
 %       2) beta    (hydrofoil angle of attack / inclination)
 %       3) zdot0   (vertical speed into the water at contact)
 %  The hydrofoil is a slanted edge ejected before the chord is fully wetted,
@@ -13,22 +14,22 @@ clear; clc; close all;
 %  a model parameter.  All other parameters are held constant.
 % =========================================================================
 
-RUN_FIXED_SPAN_SCATTER_ONLY = true;   % true: only generate the fixed-span beta-zdot figure
+RUN_FIXED_RTIP_SCATTER_ONLY = true;   % true: only generate the fixed-rtip beta-zdot figure
 
 %% ===== Fixed parameters (held constant) =====
 N    = 4;            % number of hydrofoils
-rtip = 7e-2;         % hydrofoil tip radius [m]
 m    = 40e-3;        % vehicle mass [kg]
 rho  = 1000;         % water density [kg/m^3]
 g    = 9.81;         % gravitational acceleration [m/s^2]
 
 % Moment of inertia about the spin axis: uniform 2-D disk of the vehicle mass
-%   I = 1/2 * m * R_disk^2.  Change R_disk to update easily.
-R_disk = rtip;       % disk radius [m] (assumed = tip radius; easy to change)
+%   I = m * R_disk^2.  R_disk is a fixed vehicle property (it does NOT track
+%   the swept foil tip radius).  Change R_disk to update easily.
+R_disk = 7e-2;       % disk radius [m]
 I      = m * R_disk^2;
 
 % Spin: entry value and the controller minimum (both given in deg/s)
-omega0    = deg2rad(3500);   % entry spin at contact [rad/s] (3000 deg/s)
+omega0    = deg2rad(3500);   % entry spin at contact [rad/s] (3500 deg/s)
 omega_min = deg2rad(1000);   % controller minimum spin [rad/s] (1000 deg/s)
 
 %% ===== Integration settings =====
@@ -38,29 +39,29 @@ t_end = 0.3;         % max simulation time [s]
 t     = 0:dt:t_end;
 
 %% ===== Nominal values of the three engineering variables =====
-nom.span  = 0.065;            % m (45 mm)
+nom.rtip  = 0.070;            % m (70 mm, as-built foil tip radius)
 nom.beta  = deg2rad(10);      % rad (10 deg)
 nom.zdot0 = -1.5;             % m/s (downward)
 
 %% ===== Sweep ranges for each variable =====
-span_list  = [0.020 0.030 0.040 0.050];        % m
+rtip_list  = [0.020 0.030 0.050 0.070];        % m
 beta_list  = deg2rad([5 10 15 20 25 30]);      % rad
 zdot0_list = [-1.0 -1.5 -2.0 -3.0];            % m/s
 
 %% ===== Pack constants into a struct for the helpers =====
-params = struct('N',N,'rtip',rtip,'m',m,'I',I,'rho',rho,'g',g, ...
+params = struct('N',N,'m',m,'I',I,'rho',rho,'g',g, ...
                 'omega0',omega0,'omega_min',omega_min,'z0',z0,'t',t,'dt',dt);
 
-%% ===== Fast path: fixed-span beta-zdot plane colored by exit speed =====
-if RUN_FIXED_SPAN_SCATTER_ONLY
-    plot_fixed_span_exit_speed_scatter(0.020, params);
+%% ===== Fast path: fixed-rtip beta-zdot plane colored by exit speed =====
+if RUN_FIXED_RTIP_SCATTER_ONLY
+    plot_fixed_rtip_exit_speed_scatter(0.020, params);
     return;
 end
 
 %% ===== Report nominal-case result =====
-[~,~,~,we_nom,ze_nom,te_nom] = run_case(nom.span,nom.beta,nom.zdot0,params);
-fprintf('\nNominal case (span=%.0f mm, beta=%.0f deg, zdot0=%.1f m/s):\n', ...
-    nom.span*1e3, rad2deg(nom.beta), nom.zdot0);
+[~,~,~,we_nom,ze_nom,te_nom] = run_case(nom.rtip,nom.beta,nom.zdot0,params);
+fprintf('\nNominal case (r_tip=%.0f mm, beta=%.0f deg, zdot0=%.1f m/s):\n', ...
+    nom.rtip*1e3, rad2deg(nom.beta), nom.zdot0);
 fprintf('  omega_exit = %.0f deg/s (min %.0f),  zdot_exit = %.3f m/s,  t_contact = %.2f ms\n', ...
     rad2deg(we_nom), rad2deg(omega_min), ze_nom, te_nom*1e3);
 
@@ -68,23 +69,23 @@ fprintf('  omega_exit = %.0f deg/s (min %.0f),  zdot_exit = %.3f m/s,  t_contact
 plot_entry_exit_case(0.040, deg2rad(30), -3.0, params);
 
 %% ===== Three one-at-a-time sweeps (time-series of omega and zdot) =====
-sweep_and_plot('span',  span_list,  span_list*1e3,     'span = %.0f mm',  nom, params);
+sweep_and_plot('rtip',  rtip_list,  rtip_list*1e3,     'r_{tip} = %.0f mm', nom, params);
 sweep_and_plot('beta',  beta_list,  rad2deg(beta_list),'\\beta = %.0f deg',nom, params);
 sweep_and_plot('zdot0', zdot0_list, zdot0_list,        'z'' = %.1f m/s',   nom, params);
 
 %% ===== Optimization: grids for the 2-D heatmaps and the 3-D search =====
 % Smooth grids for the 2-D heatmaps (any two variables -> xy-plane)
-gs.span  = linspace(0.020, 0.070, 45);
+gs.rtip  = linspace(0.020, 0.070, 45);
 gs.beta  = deg2rad(linspace(5, 50, 45));
 gs.zdot0 = linspace(-0.5, -5.0, 45);
 
 % Coarser grid for the exhaustive 3-D optimum search
-g3.span  = linspace(0.020, 0.070, 10);
+g3.rtip  = linspace(0.020, 0.070, 10);
 g3.beta  = deg2rad(linspace(5, 50, 10));
 g3.zdot0 = linspace(-0.5, -5.0, 10);
 
 % Grid for iso-color surfaces in the full 3-D design space
-giso.span  = linspace(0.020, 0.070, 18);
+giso.rtip  = linspace(0.020, 0.070, 18);
 giso.beta  = deg2rad(linspace(5, 50, 18));
 giso.zdot0 = linspace(-0.5, -5.0, 18);
 
@@ -95,7 +96,7 @@ giso.zdot0 = linspace(-0.5, -5.0, 18);
 % omega_exit >= floor) is marked.  Swap the first two arguments to view any
 % other pair.
 heatmap_pair('beta','zdot0', gs, nom, params);    % strongest energy levers
-heatmap_pair('span','beta',  gs, nom, params);    % geometry pair
+heatmap_pair('rtip','beta',  gs, nom, params);    % geometry pair
 
 %% ===== 4-D iso-color surface points: all three design variables at once =====
 % x/y/z are the three design variables; each point lies on a hop isosurface.
@@ -109,13 +110,13 @@ optimize_hop(g3, params);
 % =========================================================================
 
 %% Run one case and return time series + exit values
-function [time, omega_t, zdot_t, omega_exit, zdot_exit, t_exit] = run_case(span, beta, zdot0, p)
+function [time, omega_t, zdot_t, omega_exit, zdot_exit, t_exit] = run_case(rtip, beta, zdot0, p)
     [time, ~, zdot_t, omega_t, ~, zdot_exit, omega_exit, t_exit] = simulate_water_skipping( ...
-        span, beta, p.N, p.rtip, p.m, p.I, p.rho, p.g, p.omega0, p.z0, zdot0, p.t, p.dt);
+        rtip, beta, p.N, p.m, p.I, p.rho, p.g, p.omega0, p.z0, zdot0, p.t, p.dt);
 end
 
-%% Fixed-span beta-zdot plane with trajectories colored by exit speed
-function plot_fixed_span_exit_speed_scatter(span_fixed, params)
+%% Fixed-rtip beta-zdot plane with trajectories colored by exit speed
+function plot_fixed_rtip_exit_speed_scatter(rtip_fixed, params)
     beta_min = 25;   beta_max = 65;  % deg
     zin_min  = -5.0; zin_max  = -1.0; % m/s
     n_beta = 3;
@@ -134,10 +135,10 @@ function plot_fixed_span_exit_speed_scatter(span_fixed, params)
     success = false(n_cases, 1);
     x_end = 0;
 
-    fprintf('\nFixed-span beta-zdot plane trajectories (span = %.0f mm):\n', span_fixed*1e3);
+    fprintf('\nFixed-rtip beta-zdot plane trajectories (r_tip = %.0f mm):\n', rtip_fixed*1e3);
     for k = 1:n_cases
         [time, omega_t, zdot_t, omega_exit, zdot_exit, ~] = ...
-            run_case(span_fixed, deg2rad(beta_deg(k)), zdot_in(k), params);
+            run_case(rtip_fixed, deg2rad(beta_deg(k)), zdot_in(k), params);
 
         data(k).valid = numel(omega_t) == numel(time);
         data(k).exit = data(k).valid && ~isnan(omega_exit);
@@ -163,7 +164,7 @@ function plot_fixed_span_exit_speed_scatter(span_fixed, params)
     fprintf('  successful exits = %d / %d\n', nnz(success), n_cases);
     fprintf('  no exit          = %d / %d\n', nnz(~success), n_cases);
     if ~any(success)
-        warning('No successful exits were found for the selected fixed-span plane samples.');
+        warning('No successful exits were found for the selected fixed-rtip plane samples.');
         return;
     end
 
@@ -187,7 +188,7 @@ function plot_fixed_span_exit_speed_scatter(span_fixed, params)
         x_end_fail = max(x_end_fail, max(data(k).t_ms));
     end
 
-    fig = figure('Name','Fixed-span beta-zdot plane trajectories', ...
+    fig = figure('Name','Fixed-rtip beta-zdot plane trajectories', ...
         'Color','w', 'Units','centimeters', 'Position',[2 2 24.0 7.0], ...
         'PaperUnits','centimeters', 'PaperSize',[24.0 7.0], ...
         'PaperPosition',[0 0 24.0 7.0], 'PaperPositionMode','manual');
@@ -298,9 +299,9 @@ function add_parameter_label_panel(fig, data, case_colors, valid_flags)
 end
 
 %% Plot requested entry-to-exit case with comparison cases, including failures
-function plot_entry_exit_case(span, beta, zdot0, params)
+function plot_entry_exit_case(rtip, beta, zdot0, params)
     cases = struct( ...
-        'span',  {span, 0.065, 0.030, 0.030, 0.020}, ...
+        'rtip',  {rtip, 0.065, 0.030, 0.030, 0.020}, ...
         'beta',  {beta, deg2rad(10), deg2rad(30), deg2rad(50), deg2rad(50)}, ...
         'zdot0', {zdot0, -1.5, -2.5, -5.0, -5.0}, ...
         'label', {'S1 40/30/-3', 'S2 65/10/-1.5', 'S3 30/30/-2.5', ...
@@ -327,7 +328,7 @@ function plot_entry_exit_case(span, beta, zdot0, params)
     fprintf('\nEntry-to-exit comparison cases:\n');
     for i = 1:numel(cases)
         [time, omega_t, zdot_t, omega_exit, zdot_exit, t_exit] = ...
-            run_case(cases(i).span, cases(i).beta, cases(i).zdot0, params);
+            run_case(cases(i).rtip, cases(i).beta, cases(i).zdot0, params);
 
         data(i).valid = numel(omega_t) == numel(time);
         if ~data(i).valid
@@ -356,7 +357,7 @@ function plot_entry_exit_case(span, beta, zdot0, params)
         end
     end
 
-    fig = figure('Name','Entry-to-exit case: span40 beta30 zdot-3', ...
+    fig = figure('Name','Entry-to-exit case: rtip40 beta30 zdot-3', ...
         'Color','w', 'Units','centimeters', 'Position',[2 2 18.0 8.0], ...
         'PaperUnits','centimeters', 'PaperSize',[18.0 8.0], ...
         'PaperPosition',[0 0 18.0 8.0], 'PaperPositionMode','manual');
@@ -510,7 +511,7 @@ function [exit_omega_deg, exit_zdot] = sweep_and_plot(field, vals, dispvals, fmt
         cse = nom;
         cse.(field) = vals(i);
         [time, omega_t, zdot_t, omega_exit, zdot_exit, t_exit] = ...
-            run_case(cse.span, cse.beta, cse.zdot0, params);
+            run_case(cse.rtip, cse.beta, cse.zdot0, params);
 
         % Skip only truly invalid runs (e.g. bad geometry -> length mismatch)
         if numel(omega_t) ~= numel(time)
@@ -553,7 +554,7 @@ end
 %% Display scaling and axis label for a given variable
 function [d, lab] = var_disp(field, v)
     switch field
-        case 'span';  d = v*1e3;      lab = 'span [mm]';
+        case 'rtip';  d = v*1e3;      lab = 'r_{tip} [mm]';
         case 'beta';  d = rad2deg(v); lab = '\beta [deg]';
         case 'zdot0'; d = v;          lab = 'z'' into water [m/s]';
         otherwise;    d = v;          lab = field;
@@ -579,7 +580,7 @@ function heatmap_pair(fieldX, fieldY, gridv, nom, params)
             cse = nom;
             cse.(fieldX) = vx(c);
             cse.(fieldY) = vy(r);
-            [~,~,~, we, ze, ~] = run_case(cse.span, cse.beta, cse.zdot0, params);
+            [~,~,~, we, ze, ~] = run_case(cse.rtip, cse.beta, cse.zdot0, params);
             if ~isnan(we)
                 Zhop(r,c)  = ze;
                 Zspin(r,c) = rad2deg(we);
@@ -649,12 +650,12 @@ end
 %% Points sampled from iso-color surfaces in the full design space
 function isocolor_surface_points(g, params)
     omin_deg = rad2deg(params.omega_min);
-    nS = numel(g.span);
+    nS = numel(g.rtip);
     nB = numel(g.beta);
     nZ = numel(g.zdot0);
     ncases = nS*nB*nZ;
 
-    span_grid = g.span*1e3;
+    rtip_grid = g.rtip*1e3;
     beta_grid = rad2deg(g.beta);
     zdot_grid = g.zdot0;
     HopFeasVol = zeros(nB,nS,nZ);  % feasible hop, with omega_exit >= floor
@@ -664,7 +665,7 @@ function isocolor_surface_points(g, params)
     for is = 1:nS
       for ib = 1:nB
         for iz = 1:nZ
-          [~,~,~, we, ze, ~] = run_case(g.span(is), g.beta(ib), g.zdot0(iz), params);
+          [~,~,~, we, ze, ~] = run_case(g.rtip(is), g.beta(ib), g.zdot0(iz), params);
           if ~isnan(we)
               spin_deg = rad2deg(we);
               SpinVol(ib,is,iz) = spin_deg;
@@ -681,16 +682,16 @@ function isocolor_surface_points(g, params)
     tl = tiledlayout(fig, 1, 2, 'TileSpacing','compact', 'Padding','compact');
 
     ax1 = nexttile(tl, 1);
-    plot_isosurface_points(ax1, span_grid, beta_grid, zdot_grid, HopFeasVol, SpinVol, ...
+    plot_isosurface_points(ax1, rtip_grid, beta_grid, zdot_grid, HopFeasVol, SpinVol, ...
         'z''_{exit} [m/s]', '[hop isosurfaces]', '%.2f', 'm/s');
 
     ax2 = nexttile(tl, 2);
-    plot_isosurface_points(ax2, span_grid, beta_grid, zdot_grid, SpinVol, SpinVol, ...
+    plot_isosurface_points(ax2, rtip_grid, beta_grid, zdot_grid, SpinVol, SpinVol, ...
         '\omega_{exit} [deg/s]', '[omega isosurfaces]', '%.0f', 'deg/s');
 end
 
 %% Draw iso-value surfaces as colored point clouds
-function plot_isosurface_points(ax, span_grid, beta_grid, zdot_grid, ValueVol, SpinVol, cb_label, prefix, level_fmt, units)
+function plot_isosurface_points(ax, rtip_grid, beta_grid, zdot_grid, ValueVol, SpinVol, cb_label, prefix, level_fmt, units)
     valid_values = ValueVol(ValueVol > 0);
     hold(ax,'on'); grid(ax,'on'); box(ax,'on');
     set(ax, 'Color','w', 'GridAlpha',0.18, 'LineWidth',0.55, ...
@@ -704,7 +705,7 @@ function plot_isosurface_points(ax, span_grid, beta_grid, zdot_grid, ValueVol, S
     else
         vmin = min(valid_values);
         vmax = max(valid_values);
-        [SPAN, BETA, ZDOT] = meshgrid(span_grid, beta_grid, zdot_grid);
+        [RTIP, BETA, ZDOT] = meshgrid(rtip_grid, beta_grid, zdot_grid);
 
         sorted_values = sort(valid_values(:));
         q = [0.18 0.35 0.52 0.69 0.86 0.96];
@@ -722,7 +723,7 @@ function plot_isosurface_points(ax, span_grid, beta_grid, zdot_grid, ValueVol, S
         max_points_per_level = 900;
         for il = 1:numel(levels)
             lev = levels(il);
-            fv = isosurface(SPAN, BETA, ZDOT, ValueVol, lev);
+            fv = isosurface(RTIP, BETA, ZDOT, ValueVol, lev);
             if isempty(fv.faces) || isempty(fv.vertices)
                 continue;
             end
@@ -754,17 +755,17 @@ function plot_isosurface_points(ax, span_grid, beta_grid, zdot_grid, ValueVol, S
 
         level_text = sprintf([level_fmt ' '], levels);
         fprintf('%s levels = %s%s\n', prefix, level_text, units);
-        fprintf('%s max value = %.3g %s at span = %.1f mm, beta = %.1f deg, zdot0 = %.2f m/s, omega_exit = %.0f deg/s\n', ...
-            prefix, best, units, span_grid(is), beta_grid(ib), zdot_grid(iz), SpinVol(ib,is,iz));
+        fprintf('%s max value = %.3g %s at r_tip = %.1f mm, beta = %.1f deg, zdot0 = %.2f m/s, omega_exit = %.0f deg/s\n', ...
+            prefix, best, units, rtip_grid(is), beta_grid(ib), zdot_grid(iz), SpinVol(ib,is,iz));
     end
 
-    xlabel(ax, 'span [mm]', 'FontSize',9, 'FontName','Arial');
+    xlabel(ax, 'r_{tip} [mm]', 'FontSize',9, 'FontName','Arial');
     ylabel(ax, '\beta [deg]', 'FontSize',9, 'FontName','Arial');
     zlabel(ax, 'z'' into water [m/s]', 'FontSize',9, 'FontName','Arial');
-    xpad = 0.04 * (max(span_grid) - min(span_grid));
+    xpad = 0.04 * (max(rtip_grid) - min(rtip_grid));
     ypad = 0.04 * (max(beta_grid) - min(beta_grid));
     zpad = 0.04 * (max(zdot_grid) - min(zdot_grid));
-    xlim(ax, [min(span_grid)-xpad max(span_grid)+xpad]);
+    xlim(ax, [min(rtip_grid)-xpad max(rtip_grid)+xpad]);
     ylim(ax, [min(beta_grid)-ypad max(beta_grid)+ypad]);
     zlim(ax, [min(zdot_grid)-zpad max(zdot_grid)+zpad]);
     view(ax, 135, 20);
@@ -774,17 +775,17 @@ end
 %% Exhaustive 3-D search: max hop subject to omega_exit >= controller floor
 function optimize_hop(g, params)
     omin_deg = rad2deg(params.omega_min);
-    ncases = numel(g.span)*numel(g.beta)*numel(g.zdot0);
+    ncases = numel(g.rtip)*numel(g.beta)*numel(g.zdot0);
     fprintf('\n3-D optimum search over %d designs...\n', ncases);
     best = -inf;  bopt = [];
-    for is = 1:numel(g.span)
-      fprintf('  span %d/%d\n', is, numel(g.span));
+    for is = 1:numel(g.rtip)
+      fprintf('  rtip %d/%d\n', is, numel(g.rtip));
       for ib = 1:numel(g.beta)
         for iz = 1:numel(g.zdot0)
-          [~,~,~, we, ze, ~] = run_case(g.span(is), g.beta(ib), g.zdot0(iz), params);
+          [~,~,~, we, ze, ~] = run_case(g.rtip(is), g.beta(ib), g.zdot0(iz), params);
           if ~isnan(we) && rad2deg(we) >= omin_deg && ze > best
               best = ze;
-              bopt = [g.span(is), g.beta(ib), g.zdot0(iz), rad2deg(we)];
+              bopt = [g.rtip(is), g.beta(ib), g.zdot0(iz), rad2deg(we)];
           end
         end
       end
@@ -795,7 +796,7 @@ function optimize_hop(g, params)
         fprintf('  No feasible design found in the search grid.\n');
     else
         fprintf('  z''_exit (hop)  = %.2f m/s   (hop height ~ %.0f mm)\n', best, 1000*best^2/(2*params.g));
-        fprintf('  span           = %.1f mm\n', bopt(1)*1e3);
+        fprintf('  r_tip          = %.1f mm\n', bopt(1)*1e3);
         fprintf('  beta           = %.1f deg\n', rad2deg(bopt(2)));
         fprintf('  zdot0 (entry)  = %.2f m/s\n', bopt(3));
         fprintf('  omega_exit     = %.0f deg/s\n', bopt(4));
@@ -805,7 +806,7 @@ end
 %% Simulate one water contact (entry -> submerged -> exit)
 function [time, z_history, zdot_history, omega_history, ...
     z_exit, zdot_exit, omega_exit, t_exit] = simulate_water_skipping( ...
-    span, beta, N, rtip, m, I, rho, g, omega0, z0, zdot0, t, dt)
+    rtip, beta, N, m, I, rho, g, omega0, z0, zdot0, t, dt)
 
     z = z0;  zdot = zdot0;  omega = omega0;
 
@@ -826,7 +827,7 @@ function [time, z_history, zdot_history, omega_history, ...
         end
 
         % Hydrodynamic vertical thrust and resisting torque
-        [T, Q] = compute_thrust_and_torque(span, beta, N, rtip, rho, omega, z, zdot);
+        [T, Q] = compute_thrust_and_torque(rtip, beta, N, rho, omega, z, zdot);
 
         if isnan(T) || isnan(Q)
             time = t(1:k);
@@ -883,16 +884,15 @@ function [time, z_history, zdot_history, omega_history, ...
 end
 
 %% Total vertical thrust and resisting torque from N hydrofoils
-function [T_total, Q_total] = compute_thrust_and_torque(span, beta, N, rtip, rho, omega, z, zdot)
+function [T_total, Q_total] = compute_thrust_and_torque(rtip, beta, N, rho, omega, z, zdot)
     % z >= 0 : foil above water, no force
     if z >= 0
         T_total = 0;  Q_total = 0;  return;
     end
 
-    h     = -z;                 % penetration depth
-    rroot = rtip - span;        % root radius set directly by span
+    h = -z;                     % penetration depth
 
-    if rroot < 0 || rroot >= rtip
+    if rtip <= 0
         T_total = NaN;  Q_total = NaN;  return;     % invalid geometry
     end
 
@@ -903,9 +903,9 @@ function [T_total, Q_total] = compute_thrust_and_torque(span, beta, N, rtip, rho
         T_total = 0;  Q_total = 0;  return;
     end
 
-    % Blade-element integration along the span
+    % Blade-element integration from the axis of rotation to the tip
     nr = 60;
-    r  = linspace(rroot, rtip, nr);
+    r  = linspace(0, rtip, nr);
 
     vx    = omega .* r;                 % tangential velocity
     v     = sqrt(vx.^2 + zdot.^2);      % resultant velocity
