@@ -1,3 +1,5 @@
+import atexit
+import os
 import time
 import math
 import numpy as np
@@ -246,6 +248,22 @@ if __name__ == '__main__':
     'BI_yaw_delay_deg', 'BI_yaw_torque_cmd',
     'right_stick_y', 'controllerEnable',
     )
+
+    # Save into DataExchange/ next to this script, regardless of the launch
+    # directory, and also on Ctrl+C or a crash (via atexit), not only on a
+    # clean exit.  Idempotent: saves at most once per run.
+    _save_done = False
+
+    def save_flight_data():
+        global _save_done
+        if _save_done or len(saver.varList[0]) == 0:
+            return
+        save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'DataExchange')
+        os.makedirs(save_dir, exist_ok=True)
+        saver.save2mat(save_dir + os.sep)
+        _save_done = True
+
+    atexit.register(save_flight_data)
 
     lc.cf.commander.send_setpoint(0, 0, 0, 0)
 
@@ -754,4 +772,4 @@ if __name__ == '__main__':
         UDP.stop_thread()
 
     PJ.quit()
-    saver.save2mat('DataExchange/')
+    save_flight_data()
