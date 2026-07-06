@@ -2114,8 +2114,8 @@ class JoyBiController:
         self.R13_error = self.desired_r13 - R13
         self.R23_error = self.desired_r23 - R23
 
-        roll_cmd = -self.r13_r23_kp * self.R13_error
-        pitch_cmd = -self.r13_r23_kp * self.R23_error
+        roll_cmd = self.r13_r23_kp * self.R13_error
+        pitch_cmd = self.r13_r23_kp * self.R23_error
 
         self.roll_flight = saturation(
             roll_cmd,
@@ -2392,7 +2392,17 @@ class FittedBiController:
         ]
 
 class RProjectionLmsEstimator:
-    def __init__(self, mu=0.3, alpha=0.3, yaw_rate_alpha=0.3):
+    def __init__(
+            self,
+            mu=0.3,
+            alpha=0.3,
+            yaw_rate_alpha=0.3,
+            input_alpha=None,
+            lms_start_yawrate_deg=0.0,
+            yawrate_spike_window=0,
+            yawrate_jump_limit=math.inf,
+            yawrate_abs_limit=math.inf,
+            use_output_smoothing=True):
         """
         Online LMS low-frequency estimator for R13/R23.
 
@@ -2405,18 +2415,27 @@ class RProjectionLmsEstimator:
             phase_dot = 2*pi*f0
 
         Outputs:
-            R13_filt, R23_filt are the smoothed low-frequency A terms.
+            R13_filt, R23_filt are the low-frequency A terms.
         """
         self.mu = mu
         self.alpha = alpha
         self.yaw_rate_alpha = yaw_rate_alpha
+        self.input_alpha = input_alpha
+        self.lms_start_yawrate_deg = lms_start_yawrate_deg
+        self.yawrate_spike_window = int(yawrate_spike_window)
+        self.yawrate_jump_limit = yawrate_jump_limit
+        self.yawrate_abs_limit = yawrate_abs_limit
+        self.use_output_smoothing = use_output_smoothing
 
         self.initialized = False
+        self.lms_started = False
 
         self.phase = 0.0
         self.theta13 = np.zeros(3)
         self.theta23 = np.zeros(3)
 
+        self.R13_lms_input = 0.0
+        self.R23_lms_input = 0.0
         self.R13_low_raw = 0.0
         self.R23_low_raw = 0.0
         self.R13_filt = 0.0
@@ -2425,8 +2444,11 @@ class RProjectionLmsEstimator:
         self.last_yaw_raw_deg = 0.0
         self.yaw_unwrapped_deg = 0.0
         self.yawrate_deg = 0.0
+        self.yawrate_deg_clean = 0.0
         self.yawrate_deg_filt = 0.0
+        self.yawrate_output_deg = 0.0
         self.f0_yaw = 0.0
+        self._yawrate_clean_history = []
 
         self.logging_list = [
             'R13_lms_raw', 'R23_lms_raw',
@@ -2437,10 +2459,13 @@ class RProjectionLmsEstimator:
 
     def reset(self):
         self.initialized = False
+        self.lms_started = False
         self.phase = 0.0
         self.theta13[:] = 0.0
         self.theta23[:] = 0.0
 
+        self.R13_lms_input = 0.0
+        self.R23_lms_input = 0.0
         self.R13_low_raw = 0.0
         self.R23_low_raw = 0.0
         self.R13_filt = 0.0
@@ -2449,8 +2474,11 @@ class RProjectionLmsEstimator:
         self.last_yaw_raw_deg = 0.0
         self.yaw_unwrapped_deg = 0.0
         self.yawrate_deg = 0.0
+        self.yawrate_deg_clean = 0.0
         self.yawrate_deg_filt = 0.0
+        self.yawrate_output_deg = 0.0
         self.f0_yaw = 0.0
+        self._yawrate_clean_history = []
 
         self.logging_data = [0.0] * len(self.logging_list)
 
@@ -2462,22 +2490,38 @@ class RProjectionLmsEstimator:
             self.last_yaw_raw_deg = yaw_deg
             self.yaw_unwrapped_deg = yaw_deg
 
+            self.R13_lms_input = R13
+            self.R23_lms_input = R23
             self.yawrate_deg = 0.0
+            self.yawrate_deg_clean = 0.0
             self.yawrate_deg_filt = 0.0
+            self.yawrate_output_deg = 0.0
             self.f0_yaw = 0.0
             self.phase = 0.0
+            self._yawrate_clean_history = [self.yawrate_deg_clean]
 
-            self.theta13[:] = [R13, 0.0, 0.0]
-            self.theta23[:] = [R23, 0.0, 0.0]
+            self.theta13[:] = [self.R13_lms_input, 0.0, 0.0]
+            self.theta23[:] = [self.R23_lms_input, 0.0, 0.0]
 
-            self.R13_low_raw = R13
-            self.R23_low_raw = R23
-            self.R13_filt = R13
-            self.R23_filt = R23
+            self.R13_low_raw = self.R13_lms_input
+            self.R23_low_raw = self.R23_lms_input
+            self.R13_filt = self.R13_lms_input
+            self.R23_filt = self.R23_lms_input
 
             self.initialized = True
 
         else:
+            if self.input_alpha is None:
+                self.R13_lms_input = R13
+                self.R23_lms_input = R23
+            else:
+                self.R13_lms_input = self.R13_lms_input + self.input_alpha * (
+                    R13 - self.R13_lms_input
+                )
+                self.R23_lms_input = self.R23_lms_input + self.input_alpha * (
+                    R23 - self.R23_lms_input
+                )
+
             # unwrap yaw online using previous raw yaw
             yaw_delta = yaw_deg - self.last_yaw_raw_deg
             while yaw_delta > 180.0:
@@ -2490,39 +2534,83 @@ class RProjectionLmsEstimator:
 
             self.yawrate_deg = yaw_delta / dt
 
+            if self.yawrate_spike_window > 0 and self._yawrate_clean_history:
+                recent = self._yawrate_clean_history[-self.yawrate_spike_window:]
+                recent_median = float(np.median(recent))
+                is_abs_spike = abs(self.yawrate_deg) > self.yawrate_abs_limit
+                is_jump_spike = abs(self.yawrate_deg - recent_median) > self.yawrate_jump_limit
+                if is_abs_spike or is_jump_spike:
+                    self.yawrate_deg_clean = recent_median
+                else:
+                    self.yawrate_deg_clean = self.yawrate_deg
+            else:
+                self.yawrate_deg_clean = self.yawrate_deg
+
+            self._yawrate_clean_history.append(self.yawrate_deg_clean)
+            max_history = max(self.yawrate_spike_window * 3, 1)
+            if len(self._yawrate_clean_history) > max_history:
+                self._yawrate_clean_history = self._yawrate_clean_history[-max_history:]
+
             self.yawrate_deg_filt = self.yawrate_deg_filt + self.yaw_rate_alpha * (
-                self.yawrate_deg - self.yawrate_deg_filt
+                self.yawrate_deg_clean - self.yawrate_deg_filt
             )
+            self.yawrate_output_deg = self.yawrate_deg_filt
 
             self.f0_yaw = self.yawrate_deg_filt / 360.0
 
-            self.phase = self.phase + 2.0 * math.pi * self.f0_yaw * dt
-
-            phi = np.array([
-                1.0,
-                math.sin(self.phase),
-                math.cos(self.phase),
-            ])
-
-            phi_norm = float(np.dot(phi, phi) + 1e-6)
-
-            R13_hat = float(np.dot(self.theta13, phi))
-            R13_err = R13 - R13_hat
-            self.theta13 = self.theta13 + self.mu * R13_err * phi / phi_norm
-
-            R23_hat = float(np.dot(self.theta23, phi))
-            R23_err = R23 - R23_hat
-            self.theta23 = self.theta23 + self.mu * R23_err * phi / phi_norm
-
-            self.R13_low_raw = float(self.theta13[0])
-            self.R23_low_raw = float(self.theta23[0])
-
-            self.R13_filt = self.R13_filt + self.alpha * (
-                self.R13_low_raw - self.R13_filt
+            should_start_lms = (
+                self.lms_start_yawrate_deg <= 0.0
+                or abs(self.yawrate_deg_filt) >= self.lms_start_yawrate_deg
             )
-            self.R23_filt = self.R23_filt + self.alpha * (
-                self.R23_low_raw - self.R23_filt
-            )
+
+            just_started_lms = False
+            if should_start_lms and not self.lms_started:
+                self.theta13[:] = [self.R13_lms_input, 0.0, 0.0]
+                self.theta23[:] = [self.R23_lms_input, 0.0, 0.0]
+                self.phase = 0.0
+                self.lms_started = True
+                just_started_lms = True
+
+            if self.lms_started:
+                if not just_started_lms:
+                    self.phase = self.phase + 2.0 * math.pi * self.f0_yaw * dt
+
+                phi = np.array([
+                    1.0,
+                    math.sin(self.phase),
+                    math.cos(self.phase),
+                ])
+
+                phi_norm = float(np.dot(phi, phi) + 1e-6)
+
+                R13_hat = float(np.dot(self.theta13, phi))
+                R13_err = self.R13_lms_input - R13_hat
+                self.theta13 = self.theta13 + self.mu * R13_err * phi / phi_norm
+
+                R23_hat = float(np.dot(self.theta23, phi))
+                R23_err = self.R23_lms_input - R23_hat
+                self.theta23 = self.theta23 + self.mu * R23_err * phi / phi_norm
+
+                self.R13_low_raw = float(self.theta13[0])
+                self.R23_low_raw = float(self.theta23[0])
+
+                if self.use_output_smoothing:
+                    self.R13_filt = self.R13_filt + self.alpha * (
+                        self.R13_low_raw - self.R13_filt
+                    )
+                    self.R23_filt = self.R23_filt + self.alpha * (
+                        self.R23_low_raw - self.R23_filt
+                    )
+                else:
+                    self.R13_filt = self.R13_low_raw
+                    self.R23_filt = self.R23_low_raw
+            else:
+                # Before spin is high enough, return the prefiltered signal
+                # instead of NaN so the real-time controller remains safe.
+                self.R13_low_raw = self.R13_lms_input
+                self.R23_low_raw = self.R23_lms_input
+                self.R13_filt = self.R13_lms_input
+                self.R23_filt = self.R23_lms_input
 
         self.logging_data = [
             self.R13_low_raw,

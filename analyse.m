@@ -264,6 +264,37 @@ title('Mocap Yaw and Logged Yaw Rate');
 legend('Yaw', 'Yaw rate raw', 'Yaw rate filtered');
 
 %%
+%% ==== Onboard yaw/gyro vs mocap yaw/yawrate ====
+if exist('cf_yaw_deg', 'var') && exist('cf_gyro_z', 'var') && ...
+        exist('mocap_yaw_deg', 'var') && exist('mocap_yawrate_deg_filt', 'var')
+
+    figure('Name','Onboard vs Mocap Yaw and Yawrate','NumberTitle','off');
+    tiledlayout(2,1);
+
+    nexttile;
+    plot(Abs_time, mocap_yaw_deg, 'LineWidth', 1.5);
+    hold on;
+    plot(Abs_time, cf_yaw_deg, '--', 'LineWidth', 1.5);
+    grid on;
+    ylabel('Yaw (deg)');
+    title('Yaw angle comparison');
+    legend('mocap yaw', 'onboard yaw');
+
+    nexttile;
+    plot(Abs_time, mocap_yawrate_deg_filt, 'LineWidth', 1.6);
+    hold on;
+    plot(Abs_time, cf_gyro_z, '--', 'LineWidth', 1.4);
+    grid on;
+    xlabel('Time (s)');
+    ylabel('Yaw rate / gyro.z (deg/s)');
+    title('Filtered mocap yawrate vs onboard gyro.z');
+    legend('mocap yawrate filtered', 'onboard gyro.z');
+else
+    warning(['Skip onboard/mocap yaw comparison: missing cf_yaw_deg, ', ...
+        'cf_gyro_z, mocap_yaw_deg, or mocap_yawrate_deg_filt.']);
+end
+
+%%
 %%
 % small smoothing window
 filter_window = 8;   % 越小滤波越轻，建议 3~10
@@ -274,12 +305,12 @@ filter_window = 8;   % 越小滤波越轻，建议 3~10
 figure('Name','R13 R23 Tracking','NumberTitle','off');
 
 subplot(2,1,1);
-plot(Abs_time, R13*100, 'LineWidth', 1.0);
+plot(Abs_time, R13, 'LineWidth', 1.0);
 hold on;
-plot(Abs_time, R13_filt*1000, 'LineWidth', 1.8);
-plot(Abs_time, mocap_x_filt*1000, '--', 'LineWidth', 1.5);
+plot(Abs_time, R13_filt, 'LineWidth', 1.8);
+%plot(Abs_time, mocap_x_filt*1000, '--', 'LineWidth', 1.5);
 
-plot(Abs_time, cmd_roll, 'LineWidth', 1.5);
+%plot(Abs_time, cmd_roll, 'LineWidth', 1.5);
 grid on;
 xlabel('Time (s)');
 ylabel('R13 / desired_x');
@@ -287,11 +318,11 @@ title('R13 Tracking');
 legend('R13 raw', 'R13 filtered', 'mocap\_x','cmd_x');
 
 subplot(2,1,2);
-plot(Abs_time, R23*100, 'LineWidth', 1.0);
+plot(Abs_time, R23, 'LineWidth', 1.0);
 hold on;
-plot(Abs_time, R23_filt*1000, 'LineWidth', 1.8);
-plot(Abs_time, mocap_y_filt*1000, '--', 'LineWidth', 1.5);
-plot(Abs_time, cmd_pitch, 'LineWidth', 1.5);
+plot(Abs_time, R23_filt, 'LineWidth', 1.8);
+%plot(Abs_time, mocap_y_filt*1000, '--', 'LineWidth', 1.5);
+%plot(Abs_time, cmd_pitch, 'LineWidth', 1.5);
 grid on;
 xlabel('Time (s)');
 ylabel('R23 / desired_y');
@@ -349,6 +380,8 @@ legend('R23 raw', 'R23 filtered');
 
 subplot(3,1,3);
 plot(Abs_time, mocap_z_raw, 'LineWidth', 1.0);
+hold on;
+plot(Abs_time, desired_z,'LineWidth',1.8);
 grid on;
 xlabel('Time (s)');
 ylabel('R23 / desired_y');
