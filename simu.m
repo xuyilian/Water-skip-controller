@@ -9,15 +9,16 @@ clear; clc; close all;
 %                   rotation, so its radial span equals rtip)
 %       2) beta    (hydrofoil angle of attack / inclination)
 %       3) zdot0   (vertical speed into the water at contact)
-%  The hydrofoil is a slanted edge ejected before the chord is fully wetted,
-%  so the submerged chord is c_sub = z/sin(beta) (uncapped) and chord is NOT
-%  a model parameter.  All other parameters are held constant.
+%  The submerged chord grows with penetration depth, c_sub = z/sin(beta),
+%  but is capped at the physical chord cf once the plate is fully wetted
+%  (depth > cf*sin(beta)).  All other parameters are held constant.
 % =========================================================================
 
 RUN_FIXED_RTIP_SCATTER_ONLY = true;   % true: only generate the fixed-rtip beta-zdot figure
 
 %% ===== Fixed parameters (held constant) =====
 N    = 4;            % number of hydrofoils
+cf   = 10e-3;        % hydrofoil physical chord [m]; caps the wetted length
 m    = 40e-3;        % vehicle mass [kg]
 rho  = 1000;         % water density [kg/m^3]
 g    = 9.81;         % gravitational acceleration [m/s^2]
@@ -49,7 +50,7 @@ beta_list  = deg2rad([5 10 15 20 25 30]);      % rad
 zdot0_list = [-1.0 -1.5 -2.0 -3.0];            % m/s
 
 %% ===== Pack constants into a struct for the helpers =====
-params = struct('N',N,'m',m,'I',I,'rho',rho,'g',g, ...
+params = struct('N',N,'cf',cf,'m',m,'I',I,'rho',rho,'g',g, ...
                 'omega0',omega0,'omega_min',omega_min,'z0',z0,'t',t,'dt',dt);
 
 %% ===== Fast path: fixed-rtip beta-zdot plane colored by exit speed =====
@@ -112,7 +113,7 @@ optimize_hop(g3, params);
 %% Run one case and return time series + exit values
 function [time, omega_t, zdot_t, omega_exit, zdot_exit, t_exit] = run_case(rtip, beta, zdot0, p)
     [time, ~, zdot_t, omega_t, ~, zdot_exit, omega_exit, t_exit] = simulate_water_skipping( ...
-        rtip, beta, p.N, p.m, p.I, p.rho, p.g, p.omega0, p.z0, zdot0, p.t, p.dt);
+        rtip, beta, p.N, p.cf, p.m, p.I, p.rho, p.g, p.omega0, p.z0, zdot0, p.t, p.dt);
 end
 
 %% Fixed-rtip beta-zdot plane with trajectories colored by exit speed
@@ -806,7 +807,7 @@ end
 %% Simulate one water contact (entry -> submerged -> exit)
 function [time, z_history, zdot_history, omega_history, ...
     z_exit, zdot_exit, omega_exit, t_exit] = simulate_water_skipping( ...
-    rtip, beta, N, m, I, rho, g, omega0, z0, zdot0, t, dt)
+    rtip, beta, N, cf, m, I, rho, g, omega0, z0, zdot0, t, dt)
 
     z = z0;  zdot = zdot0;  omega = omega0;
 
@@ -827,7 +828,7 @@ function [time, z_history, zdot_history, omega_history, ...
         end
 
         % Hydrodynamic vertical thrust and resisting torque
-        [T, Q] = compute_thrust_and_torque(rtip, beta, N, rho, omega, z, zdot);
+        [T, Q] = compute_thrust_and_torque(rtip, beta, N, cf, rho, omega, z, zdot);
 
         if isnan(T) || isnan(Q)
             time = t(1:k);
@@ -884,7 +885,7 @@ function [time, z_history, zdot_history, omega_history, ...
 end
 
 %% Total vertical thrust and resisting torque from N hydrofoils
-function [T_total, Q_total] = compute_thrust_and_torque(rtip, beta, N, rho, omega, z, zdot)
+function [T_total, Q_total] = compute_thrust_and_torque(rtip, beta, N, cf, rho, omega, z, zdot)
     % z >= 0 : foil above water, no force
     if z >= 0
         T_total = 0;  Q_total = 0;  return;
@@ -896,9 +897,10 @@ function [T_total, Q_total] = compute_thrust_and_torque(rtip, beta, N, rho, omeg
         T_total = NaN;  Q_total = NaN;  return;     % invalid geometry
     end
 
-    % Submerged chord set purely by penetration depth: the foil is a slanted
-    % edge ejected before its chord is fully wetted, so there is no cap.
-    c_sub = h / sin(beta);
+    % Submerged chord grows with penetration depth until the plate is fully
+    % wetted (depth cf*sin(beta)); beyond that the wetted length is the
+    % physical chord cf.
+    c_sub = min(h / sin(beta), cf);
     if c_sub <= 0
         T_total = 0;  Q_total = 0;  return;
     end
