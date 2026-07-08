@@ -74,13 +74,18 @@ class LoggingCore:
         print('parameters set')
 
     def stop(self):
-        self._lg_stab.stop()
+        if hasattr(self, '_lg_stab'):
+            self._lg_stab.stop()
         self.cf.close_link()
 
     def _connected(self, link_uri):
         """ This callback is called form the Crazyflie API when a Crazyflie
         has been connected and the TOCs have been downloaded."""
         print('Connected to %s' % link_uri)
+
+        if not self._logging_dict:
+            self.is_connected = True
+            return
 
         # The definition of the logconfig can be made before connecting
         self._lg_stab = LogConfig(name='Stabilizer', period_in_ms=self.sample_time)

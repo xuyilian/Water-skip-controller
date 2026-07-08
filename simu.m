@@ -55,7 +55,7 @@ params = struct('N',N,'cf',cf,'m',m,'I',I,'rho',rho,'g',g, ...
 
 %% ===== Fast path: fixed-rtip beta-zdot plane colored by exit speed =====
 if RUN_FIXED_RTIP_SCATTER_ONLY
-    plot_fixed_rtip_exit_speed_scatter(0.070, params);
+    plot_fixed_rtip_exit_speed_scatter([], params);
     return;
 end
 
@@ -128,6 +128,11 @@ function plot_fixed_rtip_exit_speed_scatter(rtip_fixed, params)
     beta_deg = B(:);
     zdot_in = Zin(:);
     n_cases = numel(beta_deg);
+
+    if isempty(rtip_fixed) || isnan(rtip_fixed)
+        candidate_rtips = linspace(0.020, 0.070, 11);
+        rtip_fixed = select_balanced_fixed_rtip(candidate_rtips, beta_deg, zdot_in, params);
+    end
 
     data = struct('valid',{}, 'exit',{}, 'beta_deg',{}, 'zdot_in',{}, ...
                   't_ms',{}, 'zdot',{}, 'omega_deg',{}, 'zdot_exit',{});
@@ -257,6 +262,55 @@ function plot_fixed_rtip_exit_speed_scatter(rtip_fixed, params)
     drawnow;
     add_top_border(fig, ax_exit);
     add_top_border(fig, ax_fail);
+
+    out_dir = 'matlab_figures_fixed_span_plane';
+    if ~exist(out_dir, 'dir')
+        mkdir(out_dir);
+    end
+    out_name = sprintf('fixed_span%.0f_split_exit_noexit_velocity_omega', rtip_fixed*1e3);
+    exportgraphics(fig, fullfile(out_dir, [out_name '.png']), 'Resolution', 300);
+    savefig(fig, fullfile(out_dir, [out_name '.fig']));
+    fprintf('  saved figure     = %s\n', fullfile(out_dir, [out_name '.png']));
+end
+
+function rtip_best = select_balanced_fixed_rtip(candidate_rtips, beta_deg, zdot_in, params)
+    n_cases = numel(beta_deg);
+    target_success = n_cases / 2;
+    best_score = inf;
+    rtip_best = candidate_rtips(1);
+    best_success = 0;
+
+    fprintf('\nSelecting fixed r_tip/span for balanced exit/no-exit samples:\n');
+    for i = 1:numel(candidate_rtips)
+        rtip = candidate_rtips(i);
+        success_count = 0;
+        valid_count = 0;
+
+        for k = 1:n_cases
+            [time, omega_t, ~, omega_exit, ~, ~] = ...
+                run_case(rtip, deg2rad(beta_deg(k)), zdot_in(k), params);
+            valid = numel(omega_t) == numel(time);
+            valid_count = valid_count + valid;
+            success_count = success_count + (valid && ~isnan(omega_exit));
+        end
+
+        fail_count = valid_count - success_count;
+        balance_score = abs(success_count - target_success);
+        invalid_penalty = n_cases - valid_count;
+        score = balance_score + invalid_penalty;
+
+        fprintf('  r_tip/span = %.0f mm: exit = %d, no exit = %d, invalid = %d\n', ...
+            rtip*1e3, success_count, fail_count, invalid_penalty);
+
+        if score < best_score || (score == best_score && success_count > best_success)
+            best_score = score;
+            rtip_best = rtip;
+            best_success = success_count;
+        end
+    end
+
+    fprintf('  selected r_tip/span = %.0f mm (exit = %d, no exit = %d)\n', ...
+        rtip_best*1e3, best_success, n_cases - best_success);
 end
 
 function format_journal_axis(ax)
@@ -281,7 +335,7 @@ function add_parameter_label_panel(fig, data, case_colors, valid_flags)
     ax_label = axes(fig, 'Position',[0.785 0.17 0.205 0.75]);
     hold(ax_label,'on');
     axis(ax_label, 'off');
-    xlim(ax_label, [0 1.45]);
+    xlim(ax_label, [0 1.70]);
     ylim(ax_label, [0 1]);
 
     idx = find(valid_flags);
@@ -291,10 +345,10 @@ function add_parameter_label_panel(fig, data, case_colors, valid_flags)
         clr = case_colors(k,:);
         plot(ax_label, [0.02 0.24], [y_pos(ii) y_pos(ii)], '-', ...
             'Color',clr, 'LineWidth',2.2);
-        label = sprintf('\\beta=%.0f^\\circ, z''_{in}=%.0f', ...
+        label = sprintf('\\beta=%.0f^\\circ, z''_{in}=%.0f m/s', ...
             data(k).beta_deg, data(k).zdot_in);
         text(ax_label, 0.30, y_pos(ii), label, 'Interpreter','tex', ...
-            'FontName','Arial', 'FontSize',6.6, 'Color',[0.18 0.18 0.18], ...
+            'FontName','Arial', 'FontSize',6.4, 'Color',[0.18 0.18 0.18], ...
             'HorizontalAlignment','left', 'VerticalAlignment','middle');
     end
 end

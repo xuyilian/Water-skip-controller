@@ -84,9 +84,9 @@ title('Acceleration Z');
     figure('Name','Setpoint: roll/pitch/yaw/thrust','NumberTitle','off');
     tiledlayout(4,1);
 
-    nexttile; plot(t, double(cmd_roll), 'LineWidth',1.2); grid on; ylabel('roll'); 
+    nexttile; plot(t, double(cmd_roll), 'LineWidth',1.2); grid on; ylabel('roll');
     nexttile; plot(t, double(cmd_pitch),'LineWidth',1.2); grid on; ylabel('pitch');
-    nexttile; plot(t, double(cmd_yaw),  'LineWidth',1.2); grid on; ylabel('yawrate'); 
+    nexttile; plot(t, double(cmd_yaw),  'LineWidth',1.2); grid on; ylabel('yawrate');
     nexttile; plot(t, double(cmd_thrust),'LineWidth',1.2); grid on; ylabel('thrust'); xlabel('Time [s]');
 
     %% ==== 4) 发送给 Crazyflie 的姿态/推力指令 ====
@@ -160,7 +160,7 @@ target_time = 10.07;
 
 [~, idx_1007] = min(abs(Abs_time - target_time));
 
-plot(mocap_x_raw(idx_1007), mocap_y_raw(idx_1007), 'ro', 'MarkerSize', 8, 'LineWidth', 2);    
+plot(mocap_x_raw(idx_1007), mocap_y_raw(idx_1007), 'ro', 'MarkerSize', 8, 'LineWidth', 2);
 plot(mocap_x_raw(1), mocap_y_raw(1), 'o', 'MarkerSize', 8, 'LineWidth', 1.5);
 plot(mocap_x_raw(end), mocap_y_raw(end), 'x', 'MarkerSize', 10, 'LineWidth', 1.5);
 
@@ -201,12 +201,12 @@ plot(t, imu_pitch_deg, '--', 'LineWidth', 1.2);
 plot(t, mocap_pitch_deg, ':', 'LineWidth', 1.6);
 grid on; xlabel('Time [s]'); ylabel('Pitch [deg]');
 legend('cmd\_pitch','imu\_pitch','mocap\_pitch');
-%% 
+%%
 figure('Name','Battery voltage','NumberTitle','off');
     plot(t, mocap_yawrate_dps); grid on;
     xlabel('Time [s]'); ylabel('Vbat');
     title('pm.vbat');
-%% 
+%%
 figure('Name','Firmware control (ctr_roll/pitch/yaw)','NumberTitle','off');
 tiledlayout(3,1);
 
@@ -265,6 +265,8 @@ legend('Yaw', 'Yaw rate raw', 'Yaw rate filtered');
 
 %%
 %% ==== Onboard yaw/gyro vs mocap yaw/yawrate ====
+if exist('cf_yaw_deg', 'var') && exist('cf_gyro_z', 'var') && ...
+        exist('mocap_yaw_deg', 'var') && exist('mocap_yawrate_deg_filt', 'var')
 
     figure('Name','Onboard vs Mocap Yaw and Yawrate','NumberTitle','off');
     tiledlayout(2,1);
@@ -287,7 +289,10 @@ legend('Yaw', 'Yaw rate raw', 'Yaw rate filtered');
     ylabel('Yaw rate / gyro.z (deg/s)');
     title('Filtered mocap yawrate vs onboard gyro.z');
     legend('mocap yawrate filtered', 'onboard gyro.z');
-
+else
+    warning(['Skip onboard/mocap yaw comparison: missing cf_yaw_deg, ', ...
+        'cf_gyro_z, mocap_yaw_deg, or mocap_yawrate_deg_filt.']);
+end
 
 %%
 %%
@@ -349,7 +354,7 @@ grid on;
 ylabel('cmd thrust');
 xlabel('Time (s)');
 
-%% 
+%%
 
 figure('Name','R13 R23 Tracking','NumberTitle','off');
 
@@ -457,7 +462,7 @@ r23_filt = r23_filt(:);
 
 yawrate_filt_cut = yawrate_filt_cut(:);
 
-dd_filter_window = 21; 
+dd_filter_window = 21;
 
 % ---------- First derivatives ----------
 x_raw_d = gradient(x_raw, t);

@@ -2,7 +2,8 @@
 % Multi-MAT regression using same data processing as plotting script
 %
 % For each MAT file:
-%   Cut data from first mocap_yawrate_deg_filt < threshold to +duration
+%   Cut every non-overlapping segment from each downward threshold crossing
+%   of mocap_yawrate_deg_filt to +duration.
 %
 % Model:
 %       Xdot = A X + B U
@@ -39,8 +40,8 @@ num_files = numel(file_names);
 fprintf('Selected %d MAT files.\n', num_files);
 
 %% ---------- User settings ----------
-yawrate_threshold = -2800;
-duration_after_threshold = 1.5;
+yawrate_threshold = -2000;
+duration_after_threshold = 2.0;
 
 vel_filter_window = 11;
 dd_filter_window  = 11;
@@ -51,6 +52,19 @@ U_all = [];
 Xdot_all = [];
 
 file_info = struct([]);
+
+diag_sample_all = [];
+diag_r13_d_raw_all = [];
+diag_r13_d_filt_all = [];
+diag_r23_d_raw_all = [];
+diag_r23_d_filt_all = [];
+diag_r13_raw_all = [];
+diag_r13_filt_all = [];
+diag_r23_raw_all = [];
+diag_r23_filt_all = [];
+diag_ax_all = [];
+diag_ay_all = [];
+diag_sample_offset = 0;
 
 %% ==========================================
 % Process each MAT file
@@ -90,170 +104,247 @@ for k = 1:num_files
     %% ---------- Full time ----------
     t_all = S.Abs_time(:);
 
-    %% ---------- Find segment ----------
+    %% ---------- Find all non-overlapping segments ----------
     yawrate_signal = S.mocap_yawrate_deg_filt(:);
 
-    idx_start = find(yawrate_signal < yawrate_threshold, 1, 'first');
+    below_threshold = yawrate_signal < yawrate_threshold;
+    idx_cross = find(below_threshold & [true; ~below_threshold(1:end-1)]);
 
-    if isempty(idx_start)
+    if isempty(idx_cross)
         warning('Skipping %s: no data where yawrate < %.1f', ...
             file_names{k}, yawrate_threshold);
         continue;
     end
 
-    t_start = t_all(idx_start);
-    t_end = t_start + duration_after_threshold;
+    idx_start_list = [];
+    last_segment_end_time = -inf;
 
-    idx_seg = (t_all >= t_start) & (t_all <= t_end);
+    for jj = 1:numel(idx_cross)
+        candidate_idx = idx_cross(jj);
+        candidate_t = t_all(candidate_idx);
 
-    if nnz(idx_seg) < 20
-        warning('Skipping %s: selected segment too short.', file_names{k});
-        continue;
+        if candidate_t <= last_segment_end_time
+            continue;
+        end
+
+        idx_start_list(end+1) = candidate_idx; %#ok<SAGROW>
+        last_segment_end_time = candidate_t + duration_after_threshold;
     end
 
-    t = t_all(idx_seg) - t_start;
+    fprintf('Found %d threshold crossings, using %d non-overlapping segments.\n', ...
+        numel(idx_cross), numel(idx_start_list));
 
-    fprintf('Selected segment: %.3f s to %.3f s, duration %.3f s, N=%d\n', ...
-        t_start, t_end, t(end), numel(t));
+    file_segment_count = 0;
 
-    %% ---------- Cut signals ----------
-    x_raw  = S.mocap_x_raw(idx_seg);
-    x_filt = S.mocap_x_filt(idx_seg);
+    for seg_i = 1:numel(idx_start_list)
+        idx_start = idx_start_list(seg_i);
+        t_start = t_all(idx_start);
+        t_end = t_start + duration_after_threshold;
 
-    y_raw  = S.mocap_y_raw(idx_seg);
-    y_filt = S.mocap_y_filt(idx_seg);
+        idx_seg = (t_all >= t_start) & (t_all <= t_end);
 
-    r13_raw  = S.R13(idx_seg);
-    r13_filt = S.R13_filt(idx_seg);
+        if nnz(idx_seg) < 20
+            warning('Skipping %s segment %d: selected segment too short.', ...
+                file_names{k}, seg_i);
+            continue;
+        end
 
-    r23_raw  = S.R23(idx_seg);
-    r23_filt = S.R23_filt(idx_seg);
+        t = t_all(idx_seg) - t_start;
 
-    vx_filt_cut = S.mocap_vx_filt(idx_seg);
-    vy_filt_cut = S.mocap_vy_filt(idx_seg);
+        fprintf('Selected segment %d/%d: %.3f s to %.3f s, duration %.3f s, N=%d\n', ...
+            seg_i, numel(idx_start_list), t_start, t_end, t(end), numel(t));
 
-    r13_dot_cut = S.R13_d_filt(idx_seg);
-    r23_dot_cut = S.R23_d_filt(idx_seg);
+        %% ---------- Cut signals ----------
+        x_raw  = S.mocap_x_raw(idx_seg);
+        x_filt = S.mocap_x_filt(idx_seg);
 
-    tau_x = S.cmd_pitch(idx_seg);
-    tau_y = S.cmd_roll(idx_seg);
+        y_raw  = S.mocap_y_raw(idx_seg);
+        y_filt = S.mocap_y_filt(idx_seg);
 
-    %% ---------- Column vectors ----------
-    x_raw  = x_raw(:);
-    x_filt = x_filt(:);
+        r13_raw  = S.R13(idx_seg);
+        r13_filt = S.R13_filt(idx_seg);
 
-    y_raw  = y_raw(:);
-    y_filt = y_filt(:);
+        r23_raw  = S.R23(idx_seg);
+        r23_filt = S.R23_filt(idx_seg);
 
-    r13_raw  = r13_raw(:);
-    r13_filt = r13_filt(:);
+        vx_filt_cut = S.mocap_vx_filt(idx_seg);
+        vy_filt_cut = S.mocap_vy_filt(idx_seg);
 
-    r23_raw  = r23_raw(:);
-    r23_filt = r23_filt(:);
+        r13_dot_cut = S.R13_d_filt(idx_seg);
+        r23_dot_cut = S.R23_d_filt(idx_seg);
+        if isfield(S, 'R13_d') && isfield(S, 'R23_d')
+            r13_dot_raw_cut = S.R13_d(idx_seg);
+            r23_dot_raw_cut = S.R23_d(idx_seg);
+        else
+            r13_dot_raw_cut = [];
+            r23_dot_raw_cut = [];
+        end
 
-    vx_filt_cut = vx_filt_cut(:);
-    vy_filt_cut = vy_filt_cut(:);
+        tau_x = S.cmd_pitch(idx_seg);
+        tau_y = S.cmd_roll(idx_seg);
 
-    r13_dot_cut = r13_dot_cut(:);
-    r23_dot_cut = r23_dot_cut(:);
+        %% ---------- Column vectors ----------
+        x_raw  = x_raw(:);
+        x_filt = x_filt(:);
 
-    tau_x = tau_x(:);
-    tau_y = tau_y(:);
+        y_raw  = y_raw(:);
+        y_filt = y_filt(:);
 
-    %% ---------- Position derivatives for plotting / consistency ----------
-    x_raw_d  = gradient(x_raw, t); %#ok<NASGU>
-    x_filt_d = gradient(x_filt, t); %#ok<NASGU>
+        r13_raw  = r13_raw(:);
+        r13_filt = r13_filt(:);
 
-    y_raw_d  = gradient(y_raw, t); %#ok<NASGU>
-    y_filt_d = gradient(y_filt, t); %#ok<NASGU>
+        r23_raw  = r23_raw(:);
+        r23_filt = r23_filt(:);
 
-    %% ---------- Use logged filtered mocap velocities for regression ----------
-    vx = movmean(vx_filt_cut, vel_filter_window);
-    vy = movmean(vy_filt_cut, vel_filter_window);
+        vx_filt_cut = vx_filt_cut(:);
+        vy_filt_cut = vy_filt_cut(:);
 
-    %% ---------- Acceleration from logged filtered velocities ----------
-    ax = gradient(vx, t);
-    ay = gradient(vy, t);
+        r13_dot_cut = r13_dot_cut(:);
+        r23_dot_cut = r23_dot_cut(:);
+        if isempty(r13_dot_raw_cut)
+            r13_dot_raw = gradient(r13_filt, t);
+            r23_dot_raw = gradient(r23_filt, t);
+        else
+            r13_dot_raw = r13_dot_raw_cut(:);
+            r23_dot_raw = r23_dot_raw_cut(:);
+        end
 
-    ax = movmean(ax, dd_filter_window);
-    ay = movmean(ay, dd_filter_window);
+        tau_x = tau_x(:);
+        tau_y = tau_y(:);
 
-    %% ---------- R13/R23 derivatives ----------
-    r13_raw_d = gradient(r13_raw, t); %#ok<NASGU>
-    r23_raw_d = gradient(r23_raw, t); %#ok<NASGU>
+        %% ---------- Position derivatives for plotting / consistency ----------
+        x_raw_d  = gradient(x_raw, t);
+        x_filt_d = gradient(x_filt, t);
 
-    r13_dot = movmean(r13_dot_cut, dd_filter_window);
-    r23_dot = movmean(r23_dot_cut, dd_filter_window);
+        y_raw_d  = gradient(y_raw, t);
+        y_filt_d = gradient(y_filt, t);
 
-    r13_ddot = gradient(r13_dot, t);
-    r23_ddot = gradient(r23_dot, t);
+        %% ---------- Use logged filtered mocap velocities for regression ----------
+        vx = movmean(vx_filt_cut, vel_filter_window);
+        vy = movmean(vy_filt_cut, vel_filter_window);
 
-    r13_ddot = movmean(r13_ddot, dd_filter_window);
-    r23_ddot = movmean(r23_ddot, dd_filter_window);
+        %% ---------- Acceleration from logged filtered velocities ----------
+        ax = gradient(vx, t);
+        ay = gradient(vy, t);
 
-    %% ---------- Build regression data for this file ----------
-    x   = x_filt;
-    y   = y_filt;
-    r13 = r13_filt;
-    r23 = r23_filt;
+        ax = movmean(ax, dd_filter_window);
+        ay = movmean(ay, dd_filter_window);
 
-    X = [
-        x, ...
-        y, ...
-        vx, ...
-        vy, ...
-        r13, ...
-        r23, ...
-        r13_dot, ...
-        r23_dot ...
-    ];
+        %% ---------- R13/R23 derivatives ----------
+        r13_raw_d = gradient(r13_raw, t);
+        r23_raw_d = gradient(r23_raw, t);
 
-    U = [
-        tau_x, ...
-        tau_y ...
-    ];
+        r13_dot = movmean(r13_dot_cut, dd_filter_window);
+        r23_dot = movmean(r23_dot_cut, dd_filter_window);
 
-    Xdot = [
-        vx, ...
-        vy, ...
-        ax, ...
-        ay, ...
-        r13_dot, ...
-        r23_dot, ...
-        r13_ddot, ...
-        r23_ddot ...
-    ];
+        r13_ddot = gradient(r13_dot, t);
+        r23_ddot = gradient(r23_dot, t);
 
-    %% ---------- Remove invalid samples ----------
-    data_all = [X, U, Xdot];
+        r13_ddot = movmean(r13_ddot, dd_filter_window);
+        r23_ddot = movmean(r23_ddot, dd_filter_window);
 
-    valid_idx = all(isfinite(data_all), 2);
+        %% ---------- Build regression data for this segment ----------
+        x   = x_filt;
+        y   = y_filt;
+        r13 = r13_filt;
+        r23 = r23_filt;
 
-    X = X(valid_idx, :);
-    U = U(valid_idx, :);
-    Xdot = Xdot(valid_idx, :);
+        X = [
+            x, ...
+            y, ...
+            vx, ...
+            vy, ...
+            r13, ...
+            r23, ...
+            r13_dot, ...
+            r23_dot ...
+        ];
 
-    %% ---------- Trim edge samples ----------
-    trimN = max(5, ceil(max(vel_filter_window, dd_filter_window)/2));
+        U = [
+            tau_x, ...
+            tau_y ...
+        ];
 
-    if size(X,1) > 2*trimN
-        X = X(trimN+1:end-trimN, :);
-        U = U(trimN+1:end-trimN, :);
-        Xdot = Xdot(trimN+1:end-trimN, :);
-    else
-        warning('Skipping %s after trim: too few samples.', file_names{k});
-        continue;
+        Xdot = [
+            vx, ...
+            vy, ...
+            ax, ...
+            ay, ...
+            r13_dot, ...
+            r23_dot, ...
+            r13_ddot, ...
+            r23_ddot ...
+        ];
+
+        %% ---------- Remove invalid samples ----------
+        data_all = [X, U, Xdot];
+
+        valid_idx = all(isfinite(data_all), 2);
+
+        diag_segment = [
+            r13_dot_raw, ...
+            r13_dot_cut, ...
+            r23_dot_raw, ...
+            r23_dot_cut, ...
+            r13_raw, ...
+            r13_filt, ...
+            r23_raw, ...
+            r23_filt, ...
+            ax, ...
+            ay ...
+        ];
+
+        X = X(valid_idx, :);
+        U = U(valid_idx, :);
+        Xdot = Xdot(valid_idx, :);
+        diag_segment = diag_segment(valid_idx, :);
+
+        %% ---------- Trim edge samples ----------
+        trimN = max(5, ceil(max(vel_filter_window, dd_filter_window)/2));
+
+        if size(X,1) > 2*trimN
+            X = X(trimN+1:end-trimN, :);
+            U = U(trimN+1:end-trimN, :);
+            Xdot = Xdot(trimN+1:end-trimN, :);
+            diag_segment = diag_segment(trimN+1:end-trimN, :);
+        else
+            warning('Skipping %s segment %d after trim: too few samples.', ...
+                file_names{k}, seg_i);
+            continue;
+        end
+
+        %% ---------- Store diagnostic signals for plotting ----------
+        diag_sample = diag_sample_offset + (1:size(diag_segment, 1)).';
+        diag_sample_all = [diag_sample_all; diag_sample; NaN]; %#ok<AGROW>
+        diag_r13_d_raw_all = [diag_r13_d_raw_all; diag_segment(:,1); NaN]; %#ok<AGROW>
+        diag_r13_d_filt_all = [diag_r13_d_filt_all; diag_segment(:,2); NaN]; %#ok<AGROW>
+        diag_r23_d_raw_all = [diag_r23_d_raw_all; diag_segment(:,3); NaN]; %#ok<AGROW>
+        diag_r23_d_filt_all = [diag_r23_d_filt_all; diag_segment(:,4); NaN]; %#ok<AGROW>
+        diag_r13_raw_all = [diag_r13_raw_all; diag_segment(:,5); NaN]; %#ok<AGROW>
+        diag_r13_filt_all = [diag_r13_filt_all; diag_segment(:,6); NaN]; %#ok<AGROW>
+        diag_r23_raw_all = [diag_r23_raw_all; diag_segment(:,7); NaN]; %#ok<AGROW>
+        diag_r23_filt_all = [diag_r23_filt_all; diag_segment(:,8); NaN]; %#ok<AGROW>
+        diag_ax_all = [diag_ax_all; diag_segment(:,9); NaN]; %#ok<AGROW>
+        diag_ay_all = [diag_ay_all; diag_segment(:,10); NaN]; %#ok<AGROW>
+        diag_sample_offset = diag_sample_offset + size(diag_segment, 1);
+
+        %% ---------- Append to all files ----------
+        X_all = [X_all; X]; %#ok<AGROW>
+        U_all = [U_all; U]; %#ok<AGROW>
+        Xdot_all = [Xdot_all; Xdot]; %#ok<AGROW>
+
+        file_segment_count = file_segment_count + 1;
+        file_info(end+1).file_name = file_names{k}; %#ok<SAGROW>
+        file_info(end).segment_index = seg_i;
+        file_info(end).idx_start = idx_start;
+        file_info(end).t_start = t_start;
+        file_info(end).t_end = t_end;
+        file_info(end).num_samples = size(X,1);
     end
 
-    %% ---------- Append to all files ----------
-    X_all = [X_all; X]; %#ok<AGROW>
-    U_all = [U_all; U]; %#ok<AGROW>
-    Xdot_all = [Xdot_all; Xdot]; %#ok<AGROW>
-
-    file_info(end+1).file_name = file_names{k}; %#ok<SAGROW>
-    file_info(end).t_start = t_start;
-    file_info(end).t_end = t_end;
-    file_info(end).num_samples = size(X,1);
+    if file_segment_count == 0
+        warning('Skipping %s: no valid segments after processing.', file_names{k});
+    end
 end
 
 %% ---------- Check total data ----------
@@ -447,12 +538,59 @@ ylabel('\tau_y');
 xlabel('Stacked sample index');
 title('\tau_y = cmd\_roll');
 
+%% ---------- Plot diagnostic signals ----------
+if ~isempty(diag_sample_all)
+    figure('Name','Multi-MAT regression: diagnostics','NumberTitle','off');
+
+    subplot(5,1,1);
+    plot(diag_sample_all, diag_r13_d_raw_all, 'LineWidth', 1.0);
+    hold on;
+    plot(diag_sample_all, diag_r13_d_filt_all, '--', 'LineWidth', 1.0);
+    grid on;
+    ylabel('R13 dot');
+    legend('R13\_d raw', 'R13\_d filt');
+
+    subplot(5,1,2);
+    plot(diag_sample_all, diag_r23_d_raw_all, 'LineWidth', 1.0);
+    hold on;
+    plot(diag_sample_all, diag_r23_d_filt_all, '--', 'LineWidth', 1.0);
+    grid on;
+    ylabel('R23 dot');
+    legend('R23\_d raw', 'R23\_d filt');
+
+    subplot(5,1,3);
+    plot(diag_sample_all, diag_r13_raw_all, 'LineWidth', 1.0);
+    hold on;
+    plot(diag_sample_all, diag_r13_filt_all, '--', 'LineWidth', 1.0);
+    grid on;
+    ylabel('R13');
+    legend('R13 raw', 'R13 filt');
+
+    subplot(5,1,4);
+    plot(diag_sample_all, diag_r23_raw_all, 'LineWidth', 1.0);
+    hold on;
+    plot(diag_sample_all, diag_r23_filt_all, '--', 'LineWidth', 1.0);
+    grid on;
+    ylabel('R23');
+    legend('R23 raw', 'R23 filt');
+
+    subplot(5,1,5);
+    plot(diag_sample_all, diag_ax_all, 'LineWidth', 1.0);
+    hold on;
+    plot(diag_sample_all, diag_ay_all, '--', 'LineWidth', 1.0);
+    grid on;
+    ylabel('horizontal acc');
+    xlabel('Stacked segment sample index');
+    legend('a_x', 'a_y');
+end
+
 %% ---------- Save result ----------
 identified_model_multi_mat_corresponding_tau.A = A_hat;
 identified_model_multi_mat_corresponding_tau.B = B_hat;
 identified_model_multi_mat_corresponding_tau.rmse_all = rmse_all;
 
 identified_model_multi_mat_corresponding_tau.file_info = file_info;
+identified_model_multi_mat_corresponding_tau.num_segments_used = numel(file_info);
 identified_model_multi_mat_corresponding_tau.yawrate_threshold = yawrate_threshold;
 identified_model_multi_mat_corresponding_tau.duration_after_threshold = duration_after_threshold;
 identified_model_multi_mat_corresponding_tau.vel_filter_window = vel_filter_window;
