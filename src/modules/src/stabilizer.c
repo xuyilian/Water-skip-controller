@@ -82,6 +82,18 @@ static rateSupervisor_t rateSupervisorContext;
 static bool rateWarningDisplayed = false;
 SemaphoreHandle_t xRateSupervisorSemaphore;
 
+static uint8_t bictr = 0;
+
+float limint16(float in)
+{
+  if (in > 32000.0f)
+    return 32000.0f;
+  else if (in < -32000.0f)
+    return -32000.0f;
+  else
+    return in;
+}
+
 static struct {
   // position - mm
   int16_t x;
@@ -347,7 +359,33 @@ static void stabilizerTask(void* param)
       // Let the supervisor modify the setpoint to handle exceptional conditions
       supervisorOverrideSetpoint(&setpoint);
 
-      controller(&control, &setpoint, &sensorData, &state, stabilizerStep);
+      //controller(&control, &setpoint, &sensorData, &state, stabilizerStep);
+      if (setpoint.thrust >= 10.0f) {
+
+          control.thrust = setpoint.thrust;
+
+          // Use setpoint.attitude.roll  as U_X
+          // Use setpoint.attitude.pitch as U_Y
+          // Use setpoint.attitudeRate.yaw as mocap yaw angle passed from Python
+          // Note: setpoint.attitudeRate.yaw is expected to be in degrees here.
+          const float U_X = setpoint.attitude.roll * 10000.0f;
+          const float U_Y = setpoint.attitude.pitch* 10000.0f;
+          const float yaw_rad = setpoint.attitudeRate.yaw * (float)M_PI / 180.0f;
+
+          const float pitch_flight = U_X * cosf(yaw_rad) + U_Y * sinf(yaw_rad);
+          const float roll_flight = -U_X * sinf(yaw_rad) + U_Y * cosf(yaw_rad);
+
+          control.roll = (int16_t)limint16(-roll_flight);
+          control.pitch = (int16_t)limint16(-pitch_flight);
+          control.yaw = (int16_t)limint16(setpoint.attitude.yaw* 20000.0f);
+      }
+      else
+      {
+        control.thrust = 0.0f;
+        control.roll = 0.0f;
+        control.pitch = 0.0f;
+        control.yaw = 0.0f;
+      }
 
       // Critical for safety, be careful if you modify this code!
       // The supervisor will already set thrust to 0 in the setpoint if needed, but to be extra sure prevent motors from running.
@@ -396,7 +434,7 @@ PARAM_ADD_CORE(PARAM_UINT8, estimator, &estimatorType)
  * @brief Controller type Auto select(0), PID(1), Mellinger(2), INDI(3), Brescianini(4), Lee(5) (Default: 0)
  */
 PARAM_ADD_CORE(PARAM_UINT8, controller, &controllerType)
-
+PARAM_ADD(PARAM_UINT8, b,  &bictr)
 PARAM_GROUP_STOP(stabilizer)
 
 

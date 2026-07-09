@@ -75,6 +75,7 @@ enum packet_type {
   zDistanceType           = 9,
   hoverType               = 10,
   manualType              = 11,
+  revolvingType           = 12,
 };
 
 /* ---===== 2 - Decoding functions =====--- */
@@ -127,6 +128,48 @@ static void manualDecoder(setpoint_t *setpoint, uint8_t type, const void *data, 
 
   setpoint->attitudeRate.yaw = values->yawrate;
 
+  setpoint->thrust = values->thrust;
+}
+
+#define REVOLVING_RP_SCALE 10.0f
+#define REVOLVING_YAW_SCALE 100.0f
+
+struct revolvingPacket_s {
+  int16_t roll;       // U_X command from Python, scaled by REVOLVING_RP_SCALE
+  int16_t pitch;      // U_Y command from Python, scaled by REVOLVING_RP_SCALE
+  int16_t yawdeg;     // mocap yaw angle in deg, scaled by REVOLVING_YAW_SCALE
+  uint16_t thrust;
+} __attribute__((packed));
+
+/* revolvingDecoder
+ * Custom compressed 4-value setpoint for revolving/underactuated control.
+ * Python payload format is:
+ *   struct.pack('<BhhhH', TYPE_REVOLVING, roll_i16, pitch_i16, yawdeg_i16, thrust)
+ *
+ * Decode:
+ *   roll   = roll_i16   / REVOLVING_RP_SCALE
+ *   pitch  = pitch_i16  / REVOLVING_RP_SCALE
+ *   yawdeg = yawdeg_i16 / REVOLVING_YAW_SCALE
+ */
+static void revolvingDecoder(setpoint_t *setpoint, uint8_t type, const void *data, size_t datalen)
+{
+  const struct revolvingPacket_s *values = data;
+
+  ASSERT(datalen == sizeof(struct revolvingPacket_s));
+
+  setpoint->mode.x = modeDisable;
+  setpoint->mode.y = modeDisable;
+  setpoint->mode.z = modeDisable;
+
+  setpoint->mode.roll = modeAbs;
+  setpoint->mode.pitch = modeAbs;
+  setpoint->mode.yaw = modeAbs;
+
+  // Custom mapping used later in stabilizer.c
+  setpoint->attitude.roll = ((float)values->roll) / REVOLVING_RP_SCALE;
+  setpoint->attitude.pitch = ((float)values->pitch) / REVOLVING_RP_SCALE;
+  setpoint->attitudeRate.yaw = ((float)values->yawdeg) / REVOLVING_YAW_SCALE;
+  setpoint->attitude.yaw = 0.0f;
   setpoint->thrust = values->thrust;
 }
 
@@ -535,6 +578,7 @@ const static packetDecoder_t packetDecoders[] = {
   [zDistanceType]           = zDistanceDecoder,
   [hoverType]               = hoverDecoder,
   [manualType]              = manualDecoder,
+  [revolvingType]           = revolvingDecoder,
 };
 
 /* Decoder switch */

@@ -188,7 +188,7 @@ bool supervisorRequestArming(const bool doArm) {
 //
 // We say we are flying if one or more motors are running over the idle thrust.
 //
-static bool isFlyingCheck(SupervisorMem_t* this, const uint32_t tick) {
+static bool __attribute__((unused)) isFlyingCheck(SupervisorMem_t* this, const uint32_t tick) {
   bool isThrustOverIdle = false;
   const uint32_t idleThrust = powerDistributionGetIdleThrust();
   for (int i = 0; i < NBR_OF_MOTORS; ++i) {
@@ -221,7 +221,7 @@ static bool isFlyingCheck(SupervisorMem_t* this, const uint32_t tick) {
 // the thrust to the motors, avoiding the Crazyflie from running propellers at
 // significant thrust when accidentally crashing into walls or the ground.
 //
-static bool isTumbledCheck(SupervisorMem_t* this, const sensorData_t *data, const uint32_t tick) {
+static bool __attribute__((unused)) isTumbledCheck(SupervisorMem_t* this, const sensorData_t *data, const uint32_t tick) {
   const float freeFallThreshold = 0.1;
 
   const float acceptedTiltAccZ = SUPERVISOR_TUMBLE_CHECK_ACCEPTED_TILT_ACCZ;  // 60 degrees tilt (when stationary)
@@ -317,7 +317,8 @@ static void postTransitionActions(SupervisorMem_t* this, const supervisorState_t
   }
 }
 
-uint8_t tumbleCheckEnabled = SUPERVISOR_TUMBLE_CHECK_ENABLE;
+//uint8_t tumbleCheckEnabled = SUPERVISOR_TUMBLE_CHECK_ENABLE;
+uint8_t tumbleCheckEnabled = 0;
 
 static supervisorConditionBits_t updateAndPopulateConditions(SupervisorMem_t* this, const sensorData_t *sensors, const setpoint_t* setpoint, const uint32_t currentTick) {
   supervisorConditionBits_t conditions = 0;
@@ -326,18 +327,25 @@ static supervisorConditionBits_t updateAndPopulateConditions(SupervisorMem_t* th
     conditions |= SUPERVISOR_CB_ARMED;
   }
 
-  const bool isFlying = isFlyingCheck(this, currentTick);
-  if (isFlying) {
-    conditions |= SUPERVISOR_CB_IS_FLYING;
-  }
+  // const bool isFlying = isFlyingCheck(this, currentTick);
+  // if (isFlying) {
+  //   conditions |= SUPERVISOR_CB_IS_FLYING;
+  // }
+  //
+  // const bool isTumbled = isTumbledCheck(this, sensors, currentTick);
+  // if (isTumbled) {
+  //   if (tumbleCheckEnabled)
+  //   {
+  //     conditions |= SUPERVISOR_CB_IS_TUMBLED;
+  //   }
+  // }
 
-  const bool isTumbled = isTumbledCheck(this, sensors, currentTick);
-  if (isTumbled) {
-    if (tumbleCheckEnabled)
-    {
-      conditions |= SUPERVISOR_CB_IS_TUMBLED;
-    }
-  }
+  // Custom test mode:
+  // Disable sys.isFlying and sys.isTumbled based protections.
+  // Do not set SUPERVISOR_CB_IS_FLYING from motor thrust.
+  // Do not set SUPERVISOR_CB_IS_TUMBLED from IMU tilt/tumble detection.
+  this->latestThrustTick = 0;
+  this->initialTumbleTick = 0;
 
   const uint32_t setpointAge = currentTick - setpoint->timestamp;
   if (setpointAge > COMMANDER_WDT_TIMEOUT_STABILIZE) {
@@ -375,9 +383,13 @@ static supervisorConditionBits_t updateAndPopulateConditions(SupervisorMem_t* th
 }
 
 static void updateLogData(SupervisorMem_t* this, const supervisorConditionBits_t conditions) {
+  // this->canFly = supervisorAreMotorsAllowedToRun();
+  // this->isFlying = (this->state == supervisorStateFlying) || (this->state == supervisorStateWarningLevelOut);
+  // this->isTumbled = (conditions & SUPERVISOR_CB_IS_TUMBLED) != 0;
+
   this->canFly = supervisorAreMotorsAllowedToRun();
-  this->isFlying = (this->state == supervisorStateFlying) || (this->state == supervisorStateWarningLevelOut);
-  this->isTumbled = (conditions & SUPERVISOR_CB_IS_TUMBLED) != 0;
+  this->isFlying = false;
+  this->isTumbled = false;
 
   this->infoBitfield = 0;
   if (supervisorCanArm()) {
