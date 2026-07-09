@@ -40,10 +40,6 @@ def wait_for_start(PJ: PygameJoystick):
         time.sleep(0.1)
 
 
-def wrap_deg_180(angle_deg):
-    return (angle_deg + 180.0) % 360.0 - 180.0
-
-
 def height_pd_thrust(
         desired_z,
         z,
@@ -82,7 +78,7 @@ def height_pd_thrust(
 if __name__ == '__main__':
 
     # ---------------- user config ----------------
-    uri = 'radio://0/80/2M'
+    uri = 'radio://0/70/2M'
 
     sample_time = 0.01
     cf_log_period_ms = 10
@@ -111,7 +107,7 @@ if __name__ == '__main__':
     MANUAL_BASE_THRUST = 15000
     MANUAL_RAMP_TIME = 7.0
     MANUAL_THRUST_MIN = 10000
-    MANUAL_JOYSTICK_RP_SCALE = 1
+    MANUAL_JOYSTICK_RP_SCALE = 5
 
     # right stick Y integrates desired_z over time
     DESIRED_Z_RATE = 0.2      # m/s when RightStickY is fully pushed
@@ -119,7 +115,7 @@ if __name__ == '__main__':
     DESIRED_Z_MAX = 1.5
 
     # Shared height PD parameters for JBI / BI / FBI.
-    HEIGHT_THRUST_BASE = 18000
+    HEIGHT_THRUST_BASE = 28000
     HEIGHT_THRUST_MIN = 3000
     HEIGHT_THRUST_MAX = 60000
     HEIGHT_Z_KP = 13000.0
@@ -134,22 +130,15 @@ if __name__ == '__main__':
     # Model:
     #   R13 = A13 + B13*sin(phase) + C13*cos(phase)
     #   R23 = A23 + B23*sin(phase) + C23*cos(phase)
-    # phase is integrated from f0 = yawrate_deg / 360
+    # phase is integrated from a fixed yawrate to extract low-frequency R13/R23
     R_LMS_MU = 0.5
-    R_LMS_INPUT_ALPHA = 0.42
-    R_LMS_YAW_RATE_ALPHA = 0.2
+    R_LMS_INPUT_ALPHA = None
+    R_LMS_YAW_RATE_ALPHA = 1.0
     R_LMS_START_YAWRATE_DEG = 500.0
-    R_LMS_YAWRATE_SPIKE_WINDOW = 11
+    R_LMS_FIXED_YAWRATE_DEG = -2100.0
+    R_LMS_YAWRATE_SPIKE_WINDOW = 0
     R_LMS_YAWRATE_JUMP_LIMIT = 5200.0
     R_LMS_YAWRATE_ABS_LIMIT = 9000.0
-
-    # Yaw sent to the controller/firmware:
-    # use raw mocap yaw directly; use prediction only for non-boundary jumps.
-    YAW_PHASE_OFFSET_DEG = 180
-    YAW_RAW_JUMP_REJECT_DEG = 90.0
-    YAW_RAW_JUMP_RATE_MARGIN_DEG = 45.0
-    YAW_REACQUIRE_FRAMES = 3
-    YAW_WRAP_BOUNDARY_DEG = 150.0
 
     # realtime first-order low-pass filter for derivative signals
     # smaller alpha -> stronger filtering, larger delay
@@ -179,7 +168,7 @@ if __name__ == '__main__':
         xy_kd=0.15)
 
     JBI = JoyBiController(
-        r13_r23_kp=2.5,
+        r13_r23_kp=10.5,
         xy_cmd_limit=120.0,
         thrust_base=HEIGHT_THRUST_BASE,
         thrust_min=HEIGHT_THRUST_MIN,
@@ -217,6 +206,7 @@ if __name__ == '__main__':
         yawrate_jump_limit=R_LMS_YAWRATE_JUMP_LIMIT,
         yawrate_abs_limit=R_LMS_YAWRATE_ABS_LIMIT,
         use_output_smoothing=False,
+        fixed_yawrate_deg=R_LMS_FIXED_YAWRATE_DEG,
     )
 
     XY_lms = RProjectionLmsEstimator(
@@ -329,10 +319,6 @@ if __name__ == '__main__':
     R_deriv_initialized = False
     yawrate_deg = 0.0
     yawrate_deg_filt = 0.0
-    mocap_yaw_ctrl_wrapped_deg = 0.0
-    mocap_yaw_ctrl_unwrapped_deg = 0.0
-    yaw_ctrl_initialized = False
-    yaw_reject_count = 0
     mocap_x_filt = 0.0
     mocap_y_filt = 0.0
     mocap_z_filt = 0.0
@@ -384,8 +370,6 @@ if __name__ == '__main__':
                 mocap_vy_filt = 0.0
                 mocap_vz_filt = 0.0
                 manual_z_error_i = 0.0
-                yaw_ctrl_initialized = False
-                yaw_reject_count = 0
 
                 if not armed:
                     lc.cf.platform.send_arming_request(True)
@@ -416,8 +400,6 @@ if __name__ == '__main__':
                 mocap_vy_filt = 0.0
                 mocap_vz_filt = 0.0
                 manual_z_error_i = 0.0
-                yaw_ctrl_initialized = False
-                yaw_reject_count = 0
 
                 if armed:
                     lc.cf.platform.send_arming_request(False)
@@ -465,8 +447,6 @@ if __name__ == '__main__':
             mocap_vy_filt = 0.0
             mocap_vz_filt = 0.0
             manual_z_error_i = 0.0
-            yaw_ctrl_initialized = False
-            yaw_reject_count = 0
             if armed:
                 lc.cf.platform.send_arming_request(False)
                 armed = False
@@ -510,64 +490,19 @@ if __name__ == '__main__':
             ])
             mocap_yaw_deg, mocap_pitch_deg, mocap_roll_deg = mocap_rotation.as_euler('ZYX', degrees=True)
             R = mocap_rotation.as_matrix()
-            mocap_yaw_valid = True
         except Exception:
             mocap_roll_deg = 0.0
             mocap_pitch_deg = 0.0
             mocap_yaw_deg = 0.0
             R = np.eye(3)
-            mocap_yaw_valid = False
 
         R13 = R[0, 2]   # body z-axis projection on world X
         R23 = R[1, 2]   # body z-axis projection on world Y
 
-        mocap_yaw_wrapped_deg = wrap_deg_180(mocap_yaw_deg)
-        if not yaw_ctrl_initialized:
-            mocap_yaw_ctrl_wrapped_deg = mocap_yaw_wrapped_deg
-            mocap_yaw_ctrl_unwrapped_deg = mocap_yaw_wrapped_deg
-            yaw_ctrl_initialized = True
-            yaw_reject_count = 0
-        else:
-            yaw_pred_unwrapped_deg = (
-                mocap_yaw_ctrl_unwrapped_deg + yawrate_deg_filt * loop_dt
-            )
-            accepted_yaw_unwrapped_deg = yaw_pred_unwrapped_deg
-
-            if mocap_yaw_valid:
-                yaw_raw_step_deg = mocap_yaw_wrapped_deg - mocap_yaw_ctrl_wrapped_deg
-                yaw_raw_jump_limit_deg = max(
-                    YAW_RAW_JUMP_REJECT_DEG,
-                    abs(yawrate_deg_filt) * loop_dt + YAW_RAW_JUMP_RATE_MARGIN_DEG,
-                )
-                is_large_raw_jump = abs(yaw_raw_step_deg) > yaw_raw_jump_limit_deg
-                is_wrap_boundary_jump = (
-                    is_large_raw_jump
-                    and mocap_yaw_wrapped_deg * mocap_yaw_ctrl_wrapped_deg < 0.0
-                    and abs(mocap_yaw_wrapped_deg) >= YAW_WRAP_BOUNDARY_DEG
-                    and abs(mocap_yaw_ctrl_wrapped_deg) >= YAW_WRAP_BOUNDARY_DEG
-                )
-                is_nonboundary_raw_jump = is_large_raw_jump and not is_wrap_boundary_jump
-                yaw_raw_candidate_unwrapped_deg = (
-                    mocap_yaw_ctrl_unwrapped_deg
-                    + wrap_deg_180(mocap_yaw_wrapped_deg - mocap_yaw_ctrl_wrapped_deg)
-                )
-
-                if is_nonboundary_raw_jump:
-                    yaw_reject_count += 1
-                    if yaw_reject_count >= YAW_REACQUIRE_FRAMES:
-                        accepted_yaw_unwrapped_deg = yaw_raw_candidate_unwrapped_deg
-                        yaw_reject_count = 0
-                else:
-                    accepted_yaw_unwrapped_deg = yaw_raw_candidate_unwrapped_deg
-                    yaw_reject_count = 0
-
-            mocap_yaw_ctrl_unwrapped_deg = accepted_yaw_unwrapped_deg
-            mocap_yaw_ctrl_wrapped_deg = wrap_deg_180(mocap_yaw_ctrl_unwrapped_deg)
-
         R13_filt, R23_filt = R_lms.update(
             R13=R13,
             R23=R23,
-            yaw_deg=mocap_yaw_wrapped_deg,
+            yaw_deg=mocap_yaw_deg,
             dt=loop_dt,
         )
         yawrate_deg = R_lms.yawrate_deg
@@ -594,7 +529,7 @@ if __name__ == '__main__':
         mocap_x_filt, mocap_y_filt = XY_lms.update(
             R13=mocap_x_raw,
             R23=mocap_y_raw,
-            yaw_deg=mocap_yaw_ctrl_wrapped_deg,
+            yaw_deg=mocap_yaw_deg,
             dt=sample_time,
         )
 
@@ -711,18 +646,18 @@ if __name__ == '__main__':
         if controllerEnable and control_mode in CLOSED_LOOP_MODES:
             if control_mode == 'JBI':
                 JBI.update(JSL_x, -JSL_y, desired_z, R13_filt, R23_filt,
-                           mocap_z_raw, mocap_vz, mocap_yaw_ctrl_wrapped_deg, sample_time)
+                           mocap_z_raw, mocap_vz, mocap_yaw_deg, sample_time)
                 active_controller = JBI
             elif control_mode == 'BI':
                 BI.update(desired_x, desired_y, desired_z, R13_filt, R23_filt,
                           mocap_x_filt, mocap_y_filt, mocap_z_raw, mocap_vx_filt, mocap_vy_filt, mocap_vz,
-                          mocap_yaw_ctrl_wrapped_deg, sample_time)
+                          mocap_yaw_deg, sample_time)
                 active_controller = BI
             else:
                 FBI.update(desired_x, desired_y, desired_z,
                            R13_filt, R23_filt, R13_d_filt, R23_d_filt,
                            mocap_x_filt, mocap_y_filt, mocap_z_raw, mocap_vx_filt, mocap_vy_filt, mocap_vz,
-                           mocap_yaw_ctrl_wrapped_deg, sample_time)
+                           mocap_yaw_deg, sample_time)
                 active_controller = FBI
         # ---- command output ----
         if controllerEnable:
@@ -733,8 +668,9 @@ if __name__ == '__main__':
                 # Manual mode:
                 # In waterrevolve firmware, roll/pitch are still mixed into motors.
                 cmd_roll = JSL_x * MANUAL_JOYSTICK_RP_SCALE
+                cmd_roll = 0
                 cmd_pitch = -JSL_y * MANUAL_JOYSTICK_RP_SCALE
-                yaw_deg = mocap_yaw_ctrl_wrapped_deg
+                yaw_deg = mocap_yaw_deg
                 cmd_yaw = 0.0
 
             elif control_mode in CLOSED_LOOP_MODES:
@@ -746,7 +682,7 @@ if __name__ == '__main__':
                 cmd_thrust = active_controller.thrust_flight
                 cmd_roll = active_controller.roll_flight
                 cmd_pitch = active_controller.pitch_flight
-                yaw_deg = mocap_yaw_ctrl_wrapped_deg
+                yaw_deg = mocap_yaw_deg
 
                 if loop_flag % 100 == 50:
                     print(f'[{control_mode}] thrust: {cmd_thrust}')
@@ -754,17 +690,16 @@ if __name__ == '__main__':
         else:
             cmd_roll = 0.0
             cmd_pitch = 0.0
-            yaw_deg = 0.0
+            yaw_deg = mocap_yaw_deg
             cmd_yaw = 0.0
             cmd_thrust = 0
 
-        yaw_send_deg = wrap_deg_180(yaw_deg + YAW_PHASE_OFFSET_DEG)
+        yaw_send_deg = ((mocap_yaw_deg + 180 + 180) % 360) - 180
 
         lc.cf.commander.send_setpoint_revolving(
             cmd_roll,
             cmd_pitch,
             yaw_send_deg,
-            cmd_yaw,
             cmd_thrust,
         )
 

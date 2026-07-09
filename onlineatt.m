@@ -6,13 +6,15 @@
 %   R23 = A23 + B23*sin(phase) + C23*cos(phase)
 %
 % phase_dot = 2*pi*f0
-% f0 = yawrate_deg / 360
+% f0 is fixed from fixed_yawrate_abs_deg instead of estimated yawrate.
 %
 % A13, A23 are the estimated low-frequency components
 % ==========================================
 
 % Time
 trim_start_time = 0;
+fixed_yawrate_abs_deg = 2100;
+lms_start_yawrate_deg = 500;
 raw_t = Abs_time(:);
 trim_idx = raw_t >= trim_start_time;
 
@@ -34,25 +36,11 @@ r23_raw = r23_all(trim_idx);
 mocap_yaw_deg_trim = mocap_yaw_deg_all(trim_idx);
 
 % -------------------------------
-% 1. Online low-pass filtering for R13 / R23 before LMS
+% 1. No prefiltering before LMS
 % -------------------------------
 
-% Tuned with DataExchange/20260704_161923.mat after removing t < 1.2 s.
-% Larger alpha -> less smoothing and faster response.
-% Smaller alpha -> stronger smoothing and more delay.
-att_alpha = 0.42;
-r13_lms_input = zeros(N,1);
-r23_lms_input = zeros(N,1);
-
-r13_lms_input(1) = r13_raw(1);
-r23_lms_input(1) = r23_raw(1);
-
-for k = 2:N
-    r13_lms_input(k) = r13_lms_input(k-1) ...
-        + att_alpha * (r13_raw(k) - r13_lms_input(k-1));
-    r23_lms_input(k) = r23_lms_input(k-1) ...
-        + att_alpha * (r23_raw(k) - r23_lms_input(k-1));
-end
+r13_lms_input = r13_raw;
+r23_lms_input = r23_raw;
 
 % -------------------------------
 % 2. Online yaw rate from mocap yaw
@@ -72,51 +60,45 @@ for k = 2:N
     end
 end
 
-% Remove isolated yaw-rate spikes before the low-pass filter.
-% This is causal: only current and previous samples are used.
-yawrate_spike_window = 11;
-yawrate_jump_limit = 2500;  % deg/s, relative to recent clean median
-yawrate_abs_limit = 5000;   % deg/s, hard physical sanity bound
+% Keep measured yawrate only for diagnosis/start detection. Do not use it
+% for the LMS phase frequency.
 yawrate_deg_clean = yawrate_deg;
 
-for k = 2:N
-    i0 = max(1, k - yawrate_spike_window);
-    recent_median = median(yawrate_deg_clean(i0:k-1));
-
-    is_abs_spike = abs(yawrate_deg(k)) > yawrate_abs_limit;
-    is_jump_spike = abs(yawrate_deg(k) - recent_median) > yawrate_jump_limit;
-
-    if is_abs_spike || is_jump_spike
-        yawrate_deg_clean(k) = recent_median;
-    else
-        yawrate_deg_clean(k) = yawrate_deg(k);
-    end
+if exist('mocap_yawrate_deg_filt', 'var')
+    yawrate_for_sign_all = double(mocap_yawrate_deg_filt(:));
+    yawrate_for_sign = yawrate_for_sign_all(trim_idx);
+else
+    yawrate_for_sign = yawrate_deg;
 end
 
-% optional: lightly filter yawrate to reduce noise
-yawrate_alpha = 0.05;
-yawrate_deg_filt = zeros(N,1);
-yawrate_deg_filt(1) = yawrate_deg_clean(1);
-
-for k = 2:N
-    yawrate_deg_filt(k) = yawrate_deg_filt(k-1) ...
-        + yawrate_alpha * (yawrate_deg_clean(k) - yawrate_deg_filt(k-1));
+spin_idx = abs(yawrate_for_sign) >= lms_start_yawrate_deg;
+if any(spin_idx)
+    spin_sign = sign(median(yawrate_for_sign(spin_idx), 'omitnan'));
+else
+    spin_sign = sign(median(yawrate_for_sign, 'omitnan'));
+end
+if ~isfinite(spin_sign) || spin_sign == 0
+    spin_sign = 1;
 end
 
-% instantaneous frequency, Hz
+fixed_yawrate_deg = spin_sign * fixed_yawrate_abs_deg;
+yawrate_deg_filt = fixed_yawrate_deg * ones(N,1);
+
+% fixed instantaneous frequency, Hz
 f0 = yawrate_deg_filt / 360;
 
-% Start LMS only after the filtered spin rate is high enough.
-% Use absolute yaw rate because the spin direction may be negative.
-lms_start_yawrate_deg = 500;
-lms_start_idx = find(abs(yawrate_deg_filt) >= lms_start_yawrate_deg, 1, 'first');
+% Start LMS only after the measured spin rate is high enough. The measured
+% yawrate is not used for phase after this point.
+lms_start_idx = find(abs(yawrate_for_sign) >= lms_start_yawrate_deg, 1, 'first');
 
 if isempty(lms_start_idx)
-    warning('LMS did not start: |filtered yawrate| never reached %.0f deg/s.', ...
+    warning('LMS did not start: |measured yawrate| never reached %.0f deg/s.', ...
         lms_start_yawrate_deg);
 else
-    fprintf('LMS starts at t = %.3f s, filtered yawrate = %.1f deg/s.\n', ...
-        t(lms_start_idx), yawrate_deg_filt(lms_start_idx));
+    fprintf('LMS starts at t = %.3f s, measured yawrate = %.1f deg/s.\n', ...
+        t(lms_start_idx), yawrate_for_sign(lms_start_idx));
+    fprintf('Fixed LMS yawrate = %.1f deg/s, f0 = %.3f Hz.\n', ...
+        fixed_yawrate_deg, fixed_yawrate_deg / 360);
 end
 
 % -------------------------------
@@ -202,47 +184,89 @@ R13_low = R13_low_raw;
 R23_low = R23_low_raw;
 
 %%
-figure('Name','R13 R23 Low Frequency Estimation','NumberTitle','off');
+fig_low = figure('Name','R13 R23 Low Frequency Estimation','NumberTitle','off');
 
 subplot(2,1,1);
 plot(t, r13_raw, 'LineWidth', 1.0);
 hold on;
-plot(t, r13_lms_input, ':', 'LineWidth', 1.2);
 plot(t, R13_low, 'LineWidth', 1.8);
 grid on;
 xlabel('Time (s)');
 ylabel('R13');
-title('R13 Low-frequency Estimation');
-legend('R13 raw', 'R13 filtered input', 'A13 LMS output');
+title(sprintf('R13 Low-frequency Estimation, fixed yawrate %.0f deg/s', fixed_yawrate_deg));
+legend('R13 raw', 'A13 LMS output');
 
 subplot(2,1,2);
 plot(t, r23_raw, 'LineWidth', 1.0);
 hold on;
-plot(t, r23_lms_input, ':', 'LineWidth', 1.2);
 plot(t, R23_low, 'LineWidth', 1.8);
 grid on;
 xlabel('Time (s)');
 ylabel('R23');
 title('R23 Low-frequency Estimation');
-legend('R23 raw', 'R23 filtered input', 'A23 LMS output');
+legend('R23 raw', 'A23 LMS output');
 
 %%
-figure('Name','Yaw Rate and Instantaneous Frequency','NumberTitle','off');
+fig_yawrate = figure('Name','Yaw Rate and Fixed Frequency','NumberTitle','off');
 
 subplot(2,1,1);
 plot(t, yawrate_deg, 'LineWidth', 1.0);
 hold on;
-plot(t, yawrate_deg_clean, 'LineWidth', 1.2);
+plot(t, yawrate_for_sign, 'LineWidth', 1.2);
 plot(t, yawrate_deg_filt, 'LineWidth', 1.5);
 grid on;
 xlabel('Time (s)');
 ylabel('Yaw rate (deg/s)');
-legend('raw', 'despiked', 'filtered');
-title('Mocap Yaw Rate');
+legend('raw from yaw', 'logged/diagnostic', 'fixed for LMS');
+title('Measured Yaw Rate and Fixed LMS Yaw Rate');
 
 subplot(2,1,2);
 plot(t, f0, 'LineWidth', 1.5);
 grid on;
 xlabel('Time (s)');
 ylabel('f0 (Hz)');
-title('Instantaneous frequency f0 = yawrate / 360');
+title('Fixed frequency f0 = fixed yawrate / 360');
+
+%%
+fig_quality = figure('Name','Fixed-yawrate LMS quality','NumberTitle','off');
+
+subplot(2,2,1);
+plot(t, r13_raw, 'LineWidth', 0.9); hold on;
+plot(t, R13_low, 'LineWidth', 1.6);
+grid on;
+xlabel('Time (s)');
+ylabel('R13');
+legend('raw', 'low');
+
+subplot(2,2,2);
+plot(t, r23_raw, 'LineWidth', 0.9); hold on;
+plot(t, R23_low, 'LineWidth', 1.6);
+grid on;
+xlabel('Time (s)');
+ylabel('R23');
+legend('raw', 'low');
+
+subplot(2,2,3);
+plot(t, r13_raw - R13_low, 'LineWidth', 0.9); hold on;
+plot(t, R13_high_est, 'LineWidth', 1.2);
+grid on;
+xlabel('Time (s)');
+ylabel('R13 high');
+legend('raw-low', 'estimated high');
+
+subplot(2,2,4);
+plot(t, r23_raw - R23_low, 'LineWidth', 0.9); hold on;
+plot(t, R23_high_est, 'LineWidth', 1.2);
+grid on;
+xlabel('Time (s)');
+ylabel('R23 high');
+legend('raw-low', 'estimated high');
+
+output_dir = fullfile(pwd, 'matlab_figures_onlineatt_tuning');
+if ~exist(output_dir, 'dir')
+    mkdir(output_dir);
+end
+
+saveas(fig_low, fullfile(output_dir, 'onlineatt_fixed_2100_low.png'));
+saveas(fig_yawrate, fullfile(output_dir, 'onlineatt_fixed_2100_yawrate.png'));
+saveas(fig_quality, fullfile(output_dir, 'onlineatt_fixed_2100_quality.png'));

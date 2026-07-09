@@ -2402,7 +2402,8 @@ class RProjectionLmsEstimator:
             yawrate_spike_window=0,
             yawrate_jump_limit=math.inf,
             yawrate_abs_limit=math.inf,
-            use_output_smoothing=True):
+            use_output_smoothing=True,
+            fixed_yawrate_deg=None):
         """
         Online LMS low-frequency estimator for R13/R23.
 
@@ -2413,6 +2414,9 @@ class RProjectionLmsEstimator:
         phase is integrated online from:
             f0 = yawrate_deg / 360
             phase_dot = 2*pi*f0
+
+        If fixed_yawrate_deg is not None, yawrate is still measured for
+        start detection/logging, but the LMS phase uses the fixed value.
 
         Outputs:
             R13_filt, R23_filt are the low-frequency A terms.
@@ -2426,6 +2430,7 @@ class RProjectionLmsEstimator:
         self.yawrate_jump_limit = yawrate_jump_limit
         self.yawrate_abs_limit = yawrate_abs_limit
         self.use_output_smoothing = use_output_smoothing
+        self.fixed_yawrate_deg = fixed_yawrate_deg
 
         self.initialized = False
         self.lms_started = False
@@ -2554,9 +2559,12 @@ class RProjectionLmsEstimator:
             self.yawrate_deg_filt = self.yawrate_deg_filt + self.yaw_rate_alpha * (
                 self.yawrate_deg_clean - self.yawrate_deg_filt
             )
-            self.yawrate_output_deg = self.yawrate_deg_filt
+            if self.fixed_yawrate_deg is None:
+                self.yawrate_output_deg = self.yawrate_deg_filt
+            else:
+                self.yawrate_output_deg = self.fixed_yawrate_deg
 
-            self.f0_yaw = self.yawrate_deg_filt / 360.0
+            self.f0_yaw = self.yawrate_output_deg / 360.0
 
             should_start_lms = (
                 self.lms_start_yawrate_deg <= 0.0
