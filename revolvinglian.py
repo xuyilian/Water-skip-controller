@@ -1,5 +1,6 @@
 import atexit
 import os
+import threading
 import time
 import numpy as np
 
@@ -33,11 +34,113 @@ def robot_stop(lc: LoggingCore):
         print(f'Warning: failed to close Crazyflie link: {e}')
 
 
-def wait_for_start(PJ: PygameJoystick):
-    print('Press cross button to continue ...')
-    while not PJ.get_key('Cross'):
+class SetpointSender(threading.Thread):
+    """Push revolving setpoints to the radio in a dedicated thread.
+
+    The control loop calls update() (non-blocking) with the newest setpoint;
+    this thread transmits only the most recent value. If the radio link
+    back-pressures (cflib's out_queue has size 1 and blocks on put), only
+    this thread waits -- the control loop keeps running at full rate and any
+    intermediate setpoints are simply superseded by the latest one.
+    """
+
+    def __init__(self, cf, period=0.005):
+        super().__init__(name='SetpointSenderThread', daemon=True)
+        self._cf = cf
+        self._period = period
+        self._lock = threading.Lock()
+        self._setpoint = (0.0, 0.0, 0.0, 0)   # roll, pitch, yawdeg, thrust
+        self._active = False                  # don't send until first update
+        self._stop_evt = threading.Event()
+
+    def update(self, roll, pitch, yawdeg, thrust):
+        """Store the latest setpoint (called from the control loop)."""
+        with self._lock:
+            self._setpoint = (float(roll), float(pitch),
+                              float(yawdeg), int(thrust))
+            self._active = True
+
+    def run(self):
+        while not self._stop_evt.is_set():
+            t0 = time.time()
+            if self._active:
+                with self._lock:
+                    roll, pitch, yawdeg, thrust = self._setpoint
+                try:
+                    self._cf.commander.send_setpoint_revolving(
+                        roll, pitch, yawdeg, thrust)
+                except Exception as e:
+                    print(f'[sender] send failed: {e}')
+            # pace the loop; radio throughput further limits the real rate
+            dt = self._period - (time.time() - t0)
+            if dt > 0:
+                self._stop_evt.wait(dt)
+
+    def stop(self):
+        self._stop_evt.set()
+
+
+# ---------------- per-machine parameters ----------------
+# Two Crazyflies differ in radio channel, thrust trim and yaw mount.
+# Each entry bundles the machine-specific settings; pick one at startup
+# with select_machine() (Option to toggle, Cross to confirm).
+MACHINES = [
+    {
+        'name': 'cf2',
+        'radio_channel': 60,          # -> radio://0/<ch>/2M
+        'thrust_base': 35000,         # HEIGHT_THRUST_BASE (JBI/BI/FBI)
+        'manual_base_thrust': 35000,  # MANUAL_BASE_THRUST (manual mode)
+        'yaw_offset_deg': 90.0,       # added to mocap yaw before send
+        'fixed_yawrate_deg': -5200.0, # R_LMS_FIXED_YAWRATE_DEG (LMS estimator)
+        'bi_r13_r23_kp': -20.5,        # BI controller r13_r23_kp
+        'bi_xy_kp': 0.2,              # BI controller xy_kp
+        'bi_xy_kd': 0.25,             # BI controller xy_kd
+    },
+    {
+        'name': 'cf2bl',
+        'radio_channel': 80,          # TODO: set actual channel for machine 2
+        'thrust_base': 18000,         # TODO: calibrate for machine 2
+        'manual_base_thrust': 18000,  # TODO: calibrate for machine 2
+        'yaw_offset_deg': 180.0,      # TODO: calibrate yaw mount for machine 2
+        'fixed_yawrate_deg': -2100.0, # TODO: calibrate for machine 2
+        'bi_r13_r23_kp': -2.5,        # TODO: calibrate for machine 2
+        'bi_xy_kp': 0.1,              # TODO: calibrate for machine 2
+        'bi_xy_kd': 0.15,             # TODO: calibrate for machine 2
+    },
+]
+
+
+def select_machine(PJ: PygameJoystick, machines):
+    """Pick which Crazyflie to fly.
+
+    Press Option to cycle through the machines, Cross to confirm and start.
+    Returns the selected machine dict.
+    """
+    idx = 0
+    prev_option = False
+    print('Select machine: Option = toggle, Cross = confirm')
+    m = machines[idx]
+    print(f'  -> {m["name"]} (ch {m["radio_channel"]})')
+    while True:
         PJ.step()
+        option = bool(PJ.get_key('Option'))
+        if option and not prev_option:
+            idx = (idx + 1) % len(machines)
+            m = machines[idx]
+            print(f'  -> {m["name"]} (ch {m["radio_channel"]})')
+        prev_option = option
+        if PJ.get_key('Cross'):
+            break
         time.sleep(0.1)
+    m = machines[idx]
+    print(
+        f'Selected {m["name"]}: ch {m["radio_channel"]}, '
+        f'thrust_base {m["thrust_base"]}, '
+        f'manual_base {m["manual_base_thrust"]}, '
+        f'yaw_offset {m["yaw_offset_deg"]}, '
+        f'fixed_yawrate {m["fixed_yawrate_deg"]}'
+    )
+    return m
 
 
 def height_pd_thrust(
@@ -77,8 +180,17 @@ def height_pd_thrust(
 
 if __name__ == '__main__':
 
+    # ---------------- machine selection ----------------
+    # Initialize joystick and pick which Crazyflie to fly.
+    # Option toggles between machines, Cross confirms and starts.
+    PJ = PygameJoystick()
+    machine = select_machine(PJ, MACHINES)
+
     # ---------------- user config ----------------
-    uri = 'radio://0/70/2M'
+    uri = f'radio://0/{machine["radio_channel"]}/2M'
+
+    # per-machine yaw offset (deg) added to mocap yaw before sending
+    YAW_OFFSET_DEG = machine['yaw_offset_deg']
 
     sample_time = 0.01
     cf_log_period_ms = 10
@@ -104,10 +216,10 @@ if __name__ == '__main__':
     # after enabling controller in manual mode:
     #   0-7 s: ramp thrust from 10000 to base thrust
     #   >7 s: right stick adjusts desired_z, height PD outputs thrust
-    MANUAL_BASE_THRUST = 15000
+    MANUAL_BASE_THRUST = machine['manual_base_thrust']
     MANUAL_RAMP_TIME = 7.0
     MANUAL_THRUST_MIN = 10000
-    MANUAL_JOYSTICK_RP_SCALE = 5
+    MANUAL_JOYSTICK_RP_SCALE = 10
 
     # right stick Y integrates desired_z over time
     DESIRED_Z_RATE = 0.2      # m/s when RightStickY is fully pushed
@@ -115,13 +227,18 @@ if __name__ == '__main__':
     DESIRED_Z_MAX = 1.5
 
     # Shared height PD parameters for JBI / BI / FBI.
-    HEIGHT_THRUST_BASE = 28000
+    HEIGHT_THRUST_BASE = machine['thrust_base']
     HEIGHT_THRUST_MIN = 3000
     HEIGHT_THRUST_MAX = 60000
-    HEIGHT_Z_KP = 13000.0
+    HEIGHT_Z_KP = 20000.0
     HEIGHT_Z_KI = 0.0
-    HEIGHT_Z_KD = 5000.0
+    HEIGHT_Z_KD = 7000.0
     HEIGHT_Z_INT_LIMIT = 1.0
+
+    # BI controller gains (per-machine)
+    BI_R13_R23_KP = machine['bi_r13_r23_kp']
+    BI_XY_KP = machine['bi_xy_kp']
+    BI_XY_KD = machine['bi_xy_kd']
 
     CONTROL_MODES = ('manual', 'JBI', 'BI', 'FBI')
     CLOSED_LOOP_MODES = ('JBI', 'BI', 'FBI')
@@ -135,7 +252,7 @@ if __name__ == '__main__':
     R_LMS_INPUT_ALPHA = None
     R_LMS_YAW_RATE_ALPHA = 1.0
     R_LMS_START_YAWRATE_DEG = 500.0
-    R_LMS_FIXED_YAWRATE_DEG = -2100.0
+    R_LMS_FIXED_YAWRATE_DEG = machine['fixed_yawrate_deg']
     R_LMS_YAWRATE_SPIKE_WINDOW = 0
     R_LMS_YAWRATE_JUMP_LIMIT = 5200.0
     R_LMS_YAWRATE_ABS_LIMIT = 9000.0
@@ -146,16 +263,13 @@ if __name__ == '__main__':
     MOCAP_Z_FILTER_ALPHA = 0.3
 
     # ---------------- init ----------------
-    PJ = PygameJoystick()
-    wait_for_start(PJ)
-
     RD_circle = RiseDetect()
     RD_triangle = RiseDetect()
 
     RTS = RealTimeSleeper(sample_time)
 
     BI = BiController(
-        r13_r23_kp=-2.5,
+        r13_r23_kp=BI_R13_R23_KP,
         xy_cmd_limit=120,
         thrust_base=HEIGHT_THRUST_BASE,
         thrust_min=HEIGHT_THRUST_MIN,
@@ -164,11 +278,11 @@ if __name__ == '__main__':
         z_ki=HEIGHT_Z_KI,
         z_kd=HEIGHT_Z_KD,
         z_int_limit=HEIGHT_Z_INT_LIMIT,
-        xy_kp=0.1,
-        xy_kd=0.15)
+        xy_kp=BI_XY_KP,
+        xy_kd=BI_XY_KD)
 
     JBI = JoyBiController(
-        r13_r23_kp=10.5,
+        r13_r23_kp=20.5,
         xy_cmd_limit=120.0,
         thrust_base=HEIGHT_THRUST_BASE,
         thrust_min=HEIGHT_THRUST_MIN,
@@ -290,6 +404,12 @@ if __name__ == '__main__':
     atexit.register(save_flight_data)
 
     lc.cf.commander.send_setpoint(0, 0, 0, 0)
+
+    # Decouple radio sending from the control loop: this thread always
+    # transmits the latest setpoint, so radio back-pressure never stalls
+    # the loop (which would trigger "loop frequency lower than expected").
+    sender = SetpointSender(lc.cf, period=sample_time)
+    sender.start()
 
     RTS.init()
     start_time = RTS.loop_start_time
@@ -668,7 +788,7 @@ if __name__ == '__main__':
                 # Manual mode:
                 # In waterrevolve firmware, roll/pitch are still mixed into motors.
                 cmd_roll = JSL_x * MANUAL_JOYSTICK_RP_SCALE
-                cmd_roll = 0
+                #cmd_roll = 0
                 cmd_pitch = -JSL_y * MANUAL_JOYSTICK_RP_SCALE
                 yaw_deg = mocap_yaw_deg
                 cmd_yaw = 0.0
@@ -694,14 +814,10 @@ if __name__ == '__main__':
             cmd_yaw = 0.0
             cmd_thrust = 0
 
-        yaw_send_deg = ((mocap_yaw_deg + 180 + 180) % 360) - 180
+        yaw_send_deg = ((mocap_yaw_deg + YAW_OFFSET_DEG + 180) % 360) - 180
 
-        lc.cf.commander.send_setpoint_revolving(
-            cmd_roll,
-            cmd_pitch,
-            yaw_send_deg,
-            cmd_thrust,
-        )
+        # Hand the latest setpoint to the sender thread (non-blocking).
+        sender.update(cmd_roll, cmd_pitch, yaw_send_deg, cmd_thrust)
 
         if saver is not None:
             saver.add_elements(
@@ -719,6 +835,11 @@ if __name__ == '__main__':
             )
 
         RTS.sleep()
+
+    # Stop the sender thread before issuing the final motor-stop command,
+    # so it can't keep pushing revolving setpoints afterwards.
+    sender.stop()
+    sender.join(timeout=1.0)
 
     try:
         lc.cf.commander.send_setpoint(0, 0, 0, 0)
