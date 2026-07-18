@@ -1,637 +1,387 @@
-%% ==== 画图（适配 STQ_leg_meas_demo_stance_time.py 当前保存字段） ====
+%% Water-skip controller flight-log analysis
+% Plots the signals saved by revolvinglian.py (DataExchange/*.mat).
+%
+% Usage:
+%   1) Load a log into the workspace, e.g.:
+%        load('DataExchange/20260713_140141.mat');
+%   2) Run the whole script (Run / F5), OR run any single section on its own --
+%      each section bootstraps itself via analyse_prep if needed.
+%
+% Legends are kept consistent: "(raw)" = as logged, "(filtered)" = onboard/
+% estimator filter, "(smoothed)" = extra filtering applied here in MATLAB.
 
-t = Abs_time(:);
+%% ---------- Setup (run this first, or just run the whole script) ----------
+% Builds t / dt / Fs, crops to the analysis window, and fills any missing
+% signals with NaN. Every plotting section below starts with the same guard
+%   if ~exist('t','var'); analyse_prep; end
+% so you can also run a single section on its own and it will set itself up.
+analyse_prep;
 
-% 选时间窗口
-t_start = 0;
-t_end   = inf;
-idx = (t >= t_start) & (t <= t_end);
+%% ---------- Loop timing (dt) ----------
+if ~exist('t','var'); analyse_prep; end
+figure('Name','Loop timing (dt)','NumberTitle','off');
+plot(dt, 'LineWidth', 1.2); grid on;
+xlabel('Sample k'); ylabel('dt [s]');
+title('Control-loop time step');
 
-% 统一裁剪：对 workspace 里所有“长度等于 t 的向量”裁剪
-vars = whos;
-for k = 1:numel(vars)
-    name = vars(k).name;
-    v = eval(name);
-    if isnumeric(v) && isvector(v) && numel(v) == numel(t)
-        eval([name ' = ' name '(idx);']);
-    end
-end
-t = t(idx);
-
-% dt 分布
-dt = diff(t);
-figure; plot(dt); grid on; title('dt 分布'); xlabel('k'); ylabel('dt [s]');
-
-%% ---------- Plot each axis separately ----------
-figure('Name', 'Acceleration components', 'NumberTitle', 'off');
-subplot(3,1,1);
-plot(Abs_time, acc_x, 'LineWidth', 1.2);
-grid on;
-ylabel('acc.x');
-title('Acceleration X');
-subplot(3,1,2)
-plot(Abs_time, acc_y, 'LineWidth', 1.2);
-grid on;
-ylabel('acc.y');
-title('Acceleration Y');
-subplot(3,1,3);
-plot(Abs_time, acc_z, 'LineWidth', 1.2);
-grid on;
-ylabel('acc.z');
-xlabel('Time [s]');
-title('Acceleration Z');
-
-%% ==== 1) 电池电压（如果有） ====
-    figure('Name','Battery voltage','NumberTitle','off');
-    plot(t, double(pm_vbat)); grid on;
-    xlabel('Time [s]'); ylabel('Vbat');
-    title('pm.vbat');
-
-%% ==== 2) 位置：mocap vs desired ====
-
-    figure('Name','Mocap position vs Desired','NumberTitle','off');
-    tiledlayout(3,1);
-
-    nexttile;
-    plot(t, mocap_x_raw, 'LineWidth',1.2); hold on;
-    %plot(t, desired_x, '--', 'LineWidth',1.2);
-    ylabel('x [m]'); grid on; legend('mocap\_x','desired\_x');
-
-    nexttile;
-    plot(t, mocap_y_raw, 'LineWidth',1.2); hold on;
-    %plot(t, desired_y, '--', 'LineWidth',1.2);
-    ylabel('y [m]'); grid on; legend('mocap\_y','desired\_y');
-
-    nexttile;
-    plot(t, mocap_z_raw, 'LineWidth',1.2); hold on;
-    %plot(t, desired_z, '--', 'LineWidth',1.2);
-    ylabel('z [m]'); xlabel('Time [s]'); grid on; legend('mocap\_z','desired\_z');
-
-
-%% ==== 3) 动捕速度（注意：你当前代码 mocap_vz 保存的是 0.0） ====
-
-    figure('Name','Mocap velocity','NumberTitle','off');
-    plot(Abs_time, mocap_vx, 'LineWidth',1.2); hold on;
-    plot(Abs_time, mocap_vy, 'LineWidth',1.2);
-    plot(Abs_time, mocap_vz, 'LineWidth',1.2);
-    grid on; xlabel('Time [s]'); ylabel('Velocity [m/s]');
-    legend('mocap\_vx','mocap\_vy','mocap\_vz');
-    title('Note: current logger sets mocap\_vz to 0.0 in script');
-
-
-%% ==== 4) 发送给 Crazyflie 的姿态/推力指令 ====
-
-    figure('Name','Setpoint: roll/pitch/yaw/thrust','NumberTitle','off');
-    tiledlayout(4,1);
-
-    nexttile; plot(t, double(cmd_roll), 'LineWidth',1.2); grid on; ylabel('roll'); 
-    nexttile; plot(t, double(cmd_pitch),'LineWidth',1.2); grid on; ylabel('pitch');
-    nexttile; plot(t, double(cmd_yaw),  'LineWidth',1.2); grid on; ylabel('yawrate'); 
-    nexttile; plot(t, double(cmd_thrust),'LineWidth',1.2); grid on; ylabel('thrust'); xlabel('Time [s]');
-
-    %% ==== 4) 发送给 Crazyflie 的姿态/推力指令 ====
-
-    figure('Name','Setpoint: roll/pitch/yaw/thrust','NumberTitle','off');
-    tiledlayout(3,1);
-
-% roll: cmd_roll vs bi_roll_flight
-nexttile;
-plot(t, double(cmd_roll), 'LineWidth', 1.2); hold on;
-plot(t, double(bi_roll_flight), '--', 'LineWidth', 1.2);
-grid on; ylabel('roll');
-legend('cmd\_roll','bi\_roll\_flight');
-
-% pitch: 仍然单独画 bi_pitch_flight（如你需要也可叠 cmd_pitch）
-nexttile;
-plot(t, double(cmd_pitch),'LineWidth',1.2); hold on;
-plot(t, double(bi_pitch_flight), 'LineWidth', 1.2);
-grid on; ylabel('pitch');
-legend('cmd\_pitch','bi\_pitch\_flight');
-
-% thrust
-nexttile;
-plot(t, double(cmd_thrust), 'LineWidth', 1.2);
-grid on; ylabel('thrust'); xlabel('Time [s]');
-legend('cmd\_thrust');
-%% ==== 5) GeoController 输出 U_X/U_Y/U_Z + U_yaw ====
-
-    figure('Name','Controller outputs: U_X/U_Y/U_Z/U_yaw','NumberTitle','off');
-    tiledlayout(4,1);
-
-    nexttile; plot(t, double(U_X), 'LineWidth',1.2); grid on; ylabel('U\_X');
-    nexttile; plot(t, double(U_Y), 'LineWidth',1.2); grid on; ylabel('U\_Y');
-    nexttile; plot(t, double(U_Z), 'LineWidth',1.2); grid on; ylabel('U\_Z');
-    nexttile; plot(t, double(U_yaw),'LineWidth',1.2); grid on; ylabel('U\_yaw'); xlabel('Time [s]');
-
-
-%% ==== 6) R13/R23 及导数（来自 RealTimeProcessor） ====
-
-    figure('Name','R13/R23 and derivatives','NumberTitle','off');
-    tiledlayout(2,1);
-
-    nexttile;
-    plot(t, double(R13), 'LineWidth',1.2); hold on;
-    plot(t, double(R23), 'LineWidth',1.2);
-    grid on; ylabel('R'); legend('R13','R23');
-
-    nexttile;
-    plot(t, double(R13_d), 'LineWidth',1.2); hold on;
-    plot(t, double(R23_d), 'LineWidth',1.2);
-    grid on; ylabel('dR/dt'); xlabel('Time [s]'); legend('R13\_d','R23\_d');
-
-
-
-%% ==== 8) 3D 轨迹 ====
-
-    figure('Name','XYZ 3D Trajectory (mocap)','NumberTitle','off');
-    plot3(mocap_x_raw, mocap_y_raw, mocap_z_raw, 'LineWidth', 1.5);
-    grid on; axis equal;
-    xlabel('X (m)'); ylabel('Y (m)'); zlabel('Z (m)');
-    title('Mocap 3D Trajectory');
-
-%%
-%%
-figure('Name','XY 2D Trajectory (mocap)','NumberTitle','off');
-
-plot(mocap_x_raw, mocap_y_raw, 'LineWidth', 1.5);
-hold on;
-
-target_time = 10.07;
-
-[~, idx_1007] = min(abs(Abs_time - target_time));
-
-plot(mocap_x_raw(idx_1007), mocap_y_raw(idx_1007), 'ro', 'MarkerSize', 8, 'LineWidth', 2);    
-plot(mocap_x_raw(1), mocap_y_raw(1), 'o', 'MarkerSize', 8, 'LineWidth', 1.5);
-plot(mocap_x_raw(end), mocap_y_raw(end), 'x', 'MarkerSize', 10, 'LineWidth', 1.5);
-
-grid on;
-axis equal;
-
-xlabel('X (m)');
-ylabel('Y (m)');
-title('Mocap 2D Trajectory');
-legend('Trajectory', 'enable','Start', 'End');
-%% ==== Plot cmd vs IMU vs Mocap as subplots (Roll/Pitch) ====
-
-% crop + cast
-cmd_roll = double(cmd_roll(idx));
-cmd_pitch = double(cmd_pitch(idx));
-
-imu_roll_deg = double(imu_roll_deg(idx));
-imu_pitch_deg = double(imu_pitch_deg(idx));
-
-mocap_roll_deg = double(mocap_roll_deg(idx));
-mocap_pitch_deg = double(mocap_pitch_deg(idx));
-
-figure('Name','Cmd vs IMU vs Mocap (Roll/Pitch)','NumberTitle','off');
-tiledlayout(2,1);
-
-% ---- Roll ----
-nexttile;
-plot(t, cmd_roll, 'LineWidth', 1.2); hold on;
-plot(t, imu_roll_deg, '--', 'LineWidth', 1.2);
-plot(t, mocap_roll_deg, ':', 'LineWidth', 1.6);
-grid on; ylabel('Roll [deg]');
-legend('cmd\_roll','imu\_roll','mocap\_roll');
-
-% ---- Pitch ----
-nexttile;
-plot(t, cmd_pitch, 'LineWidth', 1.2); hold on;
-plot(t, imu_pitch_deg, '--', 'LineWidth', 1.2);
-plot(t, mocap_pitch_deg, ':', 'LineWidth', 1.6);
-grid on; xlabel('Time [s]'); ylabel('Pitch [deg]');
-legend('cmd\_pitch','imu\_pitch','mocap\_pitch');
-%% 
-figure('Name','Battery voltage','NumberTitle','off');
-    plot(t, mocap_yawrate_dps); grid on;
-    xlabel('Time [s]'); ylabel('Vbat');
-    title('pm.vbat');
-%% 
-figure('Name','Firmware control (ctr_roll/pitch/yaw)','NumberTitle','off');
+%% ---------- Position: mocap raw / filtered / desired ----------
+if ~exist('t','var'); analyse_prep; end
+figure('Name','Position: mocap vs desired','NumberTitle','off');
 tiledlayout(3,1);
 
-% --- roll ---
-nexttile;
-plot(t, controller_ctr_roll, 'LineWidth',1.2); hold on;
-plot(t, double(cmd_roll)*100, '--', 'LineWidth',1.2);
-grid on; ylabel('roll (int16)');
-legend('controller.ctr\_roll','cmd\_roll');
-
-% --- pitch ---
-nexttile;
-plot(t, controller_ctr_pitch, 'LineWidth',1.2); hold on;
-plot(t, double(cmd_pitch)*100, '--', 'LineWidth',1.2);
-grid on; ylabel('pitch (int16)');
-legend('controller.ctr\_pitch','cmd\_pitch');
-
-% --- yaw ---
-nexttile;
-plot(t, controller_ctr_yaw, 'LineWidth',1.2); hold on;
-plot(t, double(cmd_yaw)*100, '--', 'LineWidth',1.2);
-grid on; xlabel('Time [s]'); ylabel('yaw (int16)');
-legend('controller.ctr\_yaw','cmd\_yaw');
-
-%%
-%%
-figure('Name','Mocap Roll Pitch Yaw','NumberTitle','off');
-
-subplot(3,1,1);
-plot(Abs_time, mocap_roll_deg, 'LineWidth', 1.5);
-grid on;
-ylabel('Roll (deg)');
-title('Mocap Euler Angles');
-
-subplot(3,1,2);
-plot(Abs_time, mocap_pitch_deg, 'LineWidth', 1.5);
-grid on;
-ylabel('Pitch (deg)');
-
-subplot(3,1,3);
-
-yyaxis left;
-plot(Abs_time, mocap_yaw_deg, 'LineWidth', 1.5);
-ylabel('Yaw (deg)');
-
-yyaxis right;
-plot(Abs_time, mocap_yawrate_deg, 'LineWidth', 1.2);
-hold on;
-plot(Abs_time, mocap_yawrate_deg_filt, 'LineWidth', 2);
-ylabel('Yaw rate (deg/s)');
-
-grid on;
-xlabel('Time (s)');
-title('Mocap Yaw and Logged Yaw Rate');
-legend('Yaw', 'Yaw rate raw', 'Yaw rate filtered');
-
-%%
-%% ==== Onboard yaw/gyro vs mocap yaw/yawrate ====
-
-    figure('Name','Onboard vs Mocap Yaw and Yawrate','NumberTitle','off');
-    tiledlayout(2,1);
-
-    nexttile;
-    plot(Abs_time, mocap_yaw_deg, 'LineWidth', 1.5);
-    hold on;
-    plot(Abs_time, yaw_deg, '--', 'LineWidth', 1.5);
-    grid on;
-    ylabel('Yaw (deg)');
-    title('Yaw angle comparison');
-    legend('mocap yaw', 'onboard yaw');
-
-    nexttile;
-    plot(Abs_time, mocap_yawrate_deg_filt, 'LineWidth', 1.6);
-    hold on;
-    plot(Abs_time, mocap_yawrate_deg, '--', 'LineWidth', 1.4);
-    grid on;
-    xlabel('Time (s)');
-    ylabel('Yaw rate / gyro.z (deg/s)');
-    title('Filtered mocap yawrate vs onboard gyro.z');
-    legend('mocap yawrate filtered', 'onboard gyro.z');
-
-
-%%
-%%
-% small smoothing window
-filter_window = 8;   % 越小滤波越轻，建议 3~10
-
-%R13_filt = movmean(R13, filter_window);
-%R23_filt = movmean(R23, filter_window);
-
-figure('Name','R13 R23 Tracking','NumberTitle','off');
-
-subplot(2,1,1);
-plot(Abs_time, R13, 'LineWidth', 1.0);
-hold on;
-plot(Abs_time, R13_filt, 'LineWidth', 1.8);
-%plot(Abs_time, mocap_x_filt*1000, '--', 'LineWidth', 1.5);
-
-%plot(Abs_time, cmd_roll, 'LineWidth', 1.5);
-grid on;
-xlabel('Time (s)');
-ylabel('R13 / desired_x');
-title('R13 Tracking');
-legend('R13 raw', 'R13 filtered', 'mocap\_x','cmd_x');
-
-subplot(2,1,2);
-plot(Abs_time, R23, 'LineWidth', 1.0);
-hold on;
-plot(Abs_time, R23_filt, 'LineWidth', 1.8);
-%plot(Abs_time, mocap_y_filt*1000, '--', 'LineWidth', 1.5);
-%plot(Abs_time, cmd_pitch, 'LineWidth', 1.5);
-grid on;
-xlabel('Time (s)');
-ylabel('R23 / desired_y');
-title('R23 Tracking');
-legend('R23 raw', 'R23 filtered', 'mocap\_y','cmd_y');
-
-%%
-figure('Name','Command Roll Pitch Yaw Thrust','NumberTitle','off');
-
-subplot(4,1,1);
-plot(Abs_time, cmd_roll, 'LineWidth', 1.5);
-grid on;
-ylabel('cmd roll');
-title('Command Signals');
-
-subplot(4,1,2);
-plot(Abs_time, cmd_pitch, 'LineWidth', 1.5);
-grid on;
-ylabel('cmd pitch');
-
-subplot(4,1,3);
-plot(Abs_time, cmd_yaw, 'LineWidth', 1.5);
-grid on;
-ylabel('cmd yaw');
-
-subplot(4,1,4);
-plot(Abs_time, cmd_thrust, 'LineWidth', 1.5);
-grid on;
-ylabel('cmd thrust');
-xlabel('Time (s)');
-
-%% 
-
-figure('Name','R13 R23 Tracking','NumberTitle','off');
-
-subplot(3,1,1);
-plot(Abs_time, mocap_x_raw, 'LineWidth', 1.0);
-hold on;
-plot(Abs_time, mocap_x_filt, 'LineWidth', 1.8);
-grid on;
-xlabel('Time (s)');
-ylabel('R13 / desired_x');
-title('R13 Tracking');
-legend('R13 raw', 'R13 filtered');
-
-subplot(3,1,2);
-plot(Abs_time, mocap_y_raw, 'LineWidth', 1.0);
-hold on;
-plot(Abs_time, mocap_y_filt, 'LineWidth', 1.8);
-grid on;
-xlabel('Time (s)');
-ylabel('R23 / desired_y');
-title('R23 Tracking');
-legend('R23 raw', 'R23 filtered');
-
-subplot(3,1,3);
-plot(Abs_time, mocap_z_raw, 'LineWidth', 1.0);
-hold on;
-plot(Abs_time, desired_z,'LineWidth',1.8);
-grid on;
-xlabel('Time (s)');
-ylabel('R23 / desired_y');
-title('R23 Tracking');
-legend('R23 raw', 'R23 filtered');
-
-%%
-%%
-% ==========================================
-% Raw / Filt signals and 1st / 2nd derivatives
-% Cut data from first mocap_yawrate_deg_filt > 4000 to +2 seconds
-%
-% Signals:
-%   mocap_x_raw / mocap_x_filt
-%   mocap_y_raw / mocap_y_filt
-%   R13 / R13_filt
-%   R23 / R23_filt
-% ==========================================
-
-t_all = Abs_time(:);
-
-% ---------- Find segment ----------
-yawrate_threshold = -2800;
-duration_after_threshold = 3;   % seconds
-
-yawrate_signal = mocap_yawrate_deg_filt(:);
-
-idx_start = find(yawrate_signal < yawrate_threshold, 1, 'first');
-
-if isempty(idx_start)
-    error('No data found where mocap_yawrate_deg_filt < %.1f', yawrate_threshold);
+% X/Y dashed target = the REAL controller target: the AUTOBI (pool-centre)
+% setpoint when logged, falling back to the static desired_x/y for older logs.
+if any(~isnan(autobi_desired_x))
+    x_target = autobi_desired_x;  y_target = autobi_desired_y;
+    xy_target_name = 'x (target: pool/AUTOBI)';
+    yy_target_name = 'y (target: pool/AUTOBI)';
+else
+    x_target = desired_x;  y_target = desired_y;
+    xy_target_name = 'x (desired)';
+    yy_target_name = 'y (desired)';
 end
 
-t_start = t_all(idx_start);
-t_end = t_start + duration_after_threshold;
+nexttile;
+plot(t, mocap_x_raw,  'LineWidth', 1.0); hold on;
+plot(t, mocap_x_filt, 'LineWidth', 1.6);
+plot(t, x_target, '--', 'LineWidth', 1.4);
+grid on; ylabel('x [m]');
+legend('x (raw)','x (filtered)', xy_target_name);
+title('Position vs desired');
 
-idx_seg = (t_all >= t_start) & (t_all <= t_end);
+nexttile;
+plot(t, mocap_y_raw,  'LineWidth', 1.0); hold on;
+plot(t, mocap_y_filt, 'LineWidth', 1.6);
+plot(t, y_target, '--', 'LineWidth', 1.4);
+grid on; ylabel('y [m]');
+legend('y (raw)','y (filtered)', yy_target_name);
 
-% Cut time and reset to start from 0
-t = t_all(idx_seg) - t_start;
+nexttile;
+plot(t, mocap_z_raw,  'LineWidth', 1.0); hold on;
+plot(t, mocap_z_filt, 'LineWidth', 1.6);
+plot(t, desired_z, '--', 'LineWidth', 1.4);
+grid on; ylabel('z [m]'); xlabel('Time [s]');
+legend('z (raw)','z (filtered)','z (desired)');
 
-fprintf('Selected segment: %.3f s to %.3f s, duration %.3f s\n', ...
-    t_start, t_end, t(end));
+%% ---------- Velocity (filtered mocap) ----------
+if ~exist('t','var'); analyse_prep; end
+figure('Name','Mocap velocity (filtered)','NumberTitle','off');
+plot(t, mocap_vx_filt, 'LineWidth', 1.4); hold on;
+plot(t, mocap_vy_filt, 'LineWidth', 1.4);
+plot(t, mocap_vz_filt, 'LineWidth', 1.4);
+grid on; xlabel('Time [s]'); ylabel('Velocity [m/s]');
+legend('vx (filtered)','vy (filtered)','vz (filtered)');
+title('Filtered mocap velocity');
 
-% ---------- Cut signals ----------
-x_raw = mocap_x_raw(idx_seg);
-x_filt = mocap_x_filt(idx_seg);
+%% ---------- Battery voltage ----------
+% Only present in logs recorded after battery logging was enabled.
+% Watch for sag below the 3.2 V low-battery threshold under motor load.
+if ~exist('t','var'); analyse_prep; end
+if exist('pm_vbat','var')
+    figure('Name','Battery voltage','NumberTitle','off');
+    plot(t, pm_vbat, 'LineWidth', 1.4); hold on;
+    yline(3.2, '--', 'low 3.2 V',      'Color',[0.85 0.4 0.0], 'HandleVisibility','off');
+    yline(3.0, ':',  'critical 3.0 V', 'Color',[0.80 0.0 0.0], 'HandleVisibility','off');
+    grid on; xlabel('Time [s]'); ylabel('V_{bat} [V]');
+    title('Battery voltage (watch for sag under load)');
+    legend('v_{bat}','Location','best');
+else
+    fprintf('Battery plot skipped: this log has no pm_vbat field.\n');
+end
 
-mocap_vx_filt = mocap_vx_filt(idx_seg);
-mocap_vy_filt = mocap_vy_filt(idx_seg);
+%% ---------- Attitude angles (mocap) ----------
+if ~exist('t','var'); analyse_prep; end
+figure('Name','Mocap attitude (roll/pitch/yaw)','NumberTitle','off');
+tiledlayout(3,1);
 
-R13_d_filt = R13_d_filt(idx_seg);
-R23_d_filt = R23_d_filt(idx_seg);
+nexttile;
+plot(t, mocap_roll_deg, 'LineWidth', 1.4); grid on;
+ylabel('Roll [deg]'); title('Mocap Euler angles');
 
-y_raw = mocap_y_raw(idx_seg);
-y_filt = mocap_y_filt(idx_seg);
+nexttile;
+plot(t, mocap_pitch_deg, 'LineWidth', 1.4); grid on;
+ylabel('Pitch [deg]');
 
-r13_raw = R13(idx_seg);
-r13_filt = R13_filt(idx_seg);
+nexttile;
+plot(t, mocap_yaw_deg, 'LineWidth', 1.4); grid on;
+ylabel('Yaw [deg]'); xlabel('Time [s]');
 
-r23_raw = R23(idx_seg);
-r23_filt = R23_filt(idx_seg);
+%% ---------- Yaw rate: raw / logged filter / MATLAB smoothed ----------
+% Extra smoothing applied here so the plotted yaw rate is readable.
+% Moving-average window in samples (toolbox-free); ~0.1 s by default.
+if ~exist('t','var'); analyse_prep; end
+yawrate_smooth_window = max(3, round(0.1 * Fs));
+mocap_yawrate_deg_smooth = movmean(mocap_yawrate_deg, yawrate_smooth_window);
 
-yawrate_filt_cut = mocap_yawrate_deg_filt(idx_seg);
+figure('Name','Mocap yaw and yaw rate','NumberTitle','off');
 
-% Make sure all data are column vectors
-x_raw = x_raw(:);
-x_filt = x_filt(:);
+yyaxis left;
+plot(t, mocap_yaw_deg, 'LineWidth', 1.4);
+ylabel('Yaw [deg]');
 
-y_raw = y_raw(:);
-y_filt = y_filt(:);
+yyaxis right;
+plot(t, mocap_yawrate_deg, 'LineWidth', 1.0); hold on;
+plot(t, mocap_yawrate_deg_filt,   'LineWidth', 1.6);
+plot(t, mocap_yawrate_deg_smooth, 'LineWidth', 2.0);
+ylabel('Yaw rate [deg/s]');
 
-r13_raw = r13_raw(:);
-r13_filt = r13_filt(:);
+grid on; xlabel('Time [s]');
+title('Mocap yaw and yaw rate');
+legend('yaw', ...
+       'yaw rate (raw)', ...
+       'yaw rate (logged filter)', ...
+       sprintf('yaw rate (smoothed, %d-pt)', yawrate_smooth_window));
 
-r23_raw = r23_raw(:);
-r23_filt = r23_filt(:);
+%% ---------- Onboard (sent) yaw vs mocap yaw ----------
+if ~exist('t','var'); analyse_prep; end
+if ~exist('mocap_yawrate_deg_smooth','var')
+    mocap_yawrate_deg_smooth = movmean(mocap_yawrate_deg, max(3, round(0.1 * Fs)));
+end
+figure('Name','Onboard vs mocap yaw / yaw rate','NumberTitle','off');
+tiledlayout(2,1);
 
-yawrate_filt_cut = yawrate_filt_cut(:);
+nexttile;
+plot(t, mocap_yaw_deg, 'LineWidth', 1.5); hold on;
+plot(t, yaw_deg, '--',  'LineWidth', 1.5);
+grid on; ylabel('Yaw [deg]');
+legend('yaw (mocap)','yaw (onboard)');
+title('Yaw angle comparison');
 
-dd_filter_window = 21; 
+nexttile;
+plot(t, mocap_yawrate_deg_filt,   'LineWidth', 1.6); hold on;
+plot(t, mocap_yawrate_deg_smooth, 'LineWidth', 1.4);
+grid on; xlabel('Time [s]'); ylabel('Yaw rate [deg/s]');
+legend('yaw rate (logged filter)','yaw rate (smoothed)');
+title('Yaw rate (filtered vs smoothed)');
 
-% ---------- First derivatives ----------
-x_raw_d = gradient(x_raw, t);
-x_filt_d = gradient(x_filt, t);
+%% ---------- Setpoint commands ----------
+if ~exist('t','var'); analyse_prep; end
+figure('Name','Commands: roll/pitch/yaw/thrust','NumberTitle','off');
+tiledlayout(4,1);
 
-y_raw_d = gradient(y_raw, t);
-y_filt_d = gradient(y_filt, t);
+nexttile; plot(t, double(cmd_roll),   'LineWidth', 1.4); grid on; ylabel('roll');
+title('Commands sent to Crazyflie');
+nexttile; plot(t, double(cmd_pitch),  'LineWidth', 1.4); grid on; ylabel('pitch');
+nexttile; plot(t, double(cmd_yaw),    'LineWidth', 1.4); grid on; ylabel('yaw rate');
+nexttile; plot(t, double(cmd_thrust), 'LineWidth', 1.4); grid on; ylabel('thrust');
+xlabel('Time [s]');
 
-x_filt_d = movmean(x_filt_d, dd_filter_window);
-y_filt_d = movmean(y_filt_d, dd_filter_window);
+%% ---------- R13 / R23 tracking (raw vs filtered) ----------
+if ~exist('t','var'); analyse_prep; end
+figure('Name','R13/R23 tracking','NumberTitle','off');
+tiledlayout(2,1);
 
-r13_raw_d = gradient(r13_raw, t);
-r13_filt_d = gradient(r13_filt, t);
+nexttile;
+plot(t, R13,      'LineWidth', 1.0); hold on;
+plot(t, R13_filt, 'LineWidth', 1.8);
+grid on; ylabel('R13'); title('R13 tracking');
+legend('R13 (raw)','R13 (filtered)');
 
-r23_raw_d = gradient(r23_raw, t);
-r23_filt_d = gradient(r23_filt, t);
+nexttile;
+plot(t, R23,      'LineWidth', 1.0); hold on;
+plot(t, R23_filt, 'LineWidth', 1.8);
+grid on; ylabel('R23'); xlabel('Time [s]'); title('R23 tracking');
+legend('R23 (raw)','R23 (filtered)');
 
-% ---------- Second derivatives ----------
-x_raw_dd = gradient(x_raw_d, t);
-x_filt_dd = gradient(x_filt_d, t);
+%% ---------- R13 / R23 derivatives (raw vs filtered) ----------
+if ~exist('t','var'); analyse_prep; end
+figure('Name','R13/R23 derivatives','NumberTitle','off');
+tiledlayout(2,1);
 
+nexttile;
+plot(t, R13_d,      'LineWidth', 1.0); hold on;
+plot(t, R13_d_filt, 'LineWidth', 1.8);
+grid on; ylabel('dR13/dt');
+legend('R13 rate (raw)','R13 rate (filtered)');
+title('R13 / R23 time derivatives');
 
-y_raw_dd = gradient(y_raw_d, t);
-y_filt_dd = gradient(y_filt_d, t);
+nexttile;
+plot(t, R23_d,      'LineWidth', 1.0); hold on;
+plot(t, R23_d_filt, 'LineWidth', 1.8);
+grid on; ylabel('dR23/dt'); xlabel('Time [s]');
+legend('R23 rate (raw)','R23 rate (filtered)');
 
+%% ---------- 3D trajectory (mocap) ----------
+if ~exist('t','var'); analyse_prep; end
+figure('Name','3D trajectory (mocap)','NumberTitle','off');
+plot3(mocap_x_raw, mocap_y_raw, mocap_z_raw, 'LineWidth', 1.5);
+grid on; axis equal;
+xlabel('X [m]'); ylabel('Y [m]'); zlabel('Z [m]');
+title('Mocap 3D trajectory');
 
+%% ---------- 2D trajectory (mocap) ----------
+if ~exist('t','var'); analyse_prep; end
+figure('Name','2D trajectory (mocap)','NumberTitle','off');
+plot(mocap_x_raw, mocap_y_raw, 'LineWidth', 1.5); hold on;
+plot(mocap_x_raw(1),   mocap_y_raw(1),   'o', 'MarkerSize', 8,  'LineWidth', 1.5);
+plot(mocap_x_raw(end), mocap_y_raw(end), 'x', 'MarkerSize', 10, 'LineWidth', 1.5);
+grid on; axis equal;
+xlabel('X [m]'); ylabel('Y [m]');
+title('Mocap 2D trajectory');
+legend('trajectory','start','end');
 
-% ---------- Extra filter for second derivatives ----------
-dd_filter_window = 11;   % 越大越平滑，延迟/失真越大
+%% ==========================================================
+%  Segment analysis around the water-skip event
+%  Segment = first sample where the filtered yaw rate drops below a
+%  threshold, extended by a fixed duration. Raw/filtered signals and their
+%  1st/2nd derivatives are plotted for X, Y, R13 and R23.
+%  ==========================================================
+if ~exist('t','var'); analyse_prep; end
+t_all = Abs_time(:);
 
-x_filt_dd_filt = movmean(x_filt_dd, dd_filter_window);
-y_filt_dd_filt = movmean(y_filt_dd, dd_filter_window);
+% Segment definition.
+yawrate_threshold        = -2800;   % deg/s
+duration_after_threshold = 3;       % seconds
 
-r13_raw_dd = gradient(r13_raw_d, t);
+idx_start = find(mocap_yawrate_deg_filt(:) < yawrate_threshold, 1, 'first');
+if isempty(idx_start)
+    % No water-skip event in this log (e.g. short / aborted run). Skip the
+    % segment plots but leave all earlier figures intact.
+    warning(['Segment analysis skipped: filtered yaw rate never drops below ' ...
+        '%.0f deg/s in this log.'], yawrate_threshold);
+    return
+end
 
-r23_raw_dd = gradient(r23_raw_d, t);
+seg_t_start = t_all(idx_start);
+seg_t_end   = seg_t_start + duration_after_threshold;
+idx_seg     = (t_all >= seg_t_start) & (t_all <= seg_t_end);
 
-r13_filt_d_filt = movmean(R13_d_filt, dd_filter_window);
-r23_filt_d_filt = movmean(R23_d_filt, dd_filter_window);
+if nnz(idx_seg) < 5
+    warning(['Segment analysis skipped: only %d sample(s) in the %.1f s window ' ...
+        '(event too close to the end of the log).'], nnz(idx_seg), duration_after_threshold);
+    return
+end
 
-r13_filt_dd = gradient(r13_filt_d_filt, t);
-r23_filt_dd = gradient(r23_filt_d_filt, t);
+% Segment time, reset to start at 0.
+ts = t_all(idx_seg) - seg_t_start;
+fprintf('Segment: %.3f s to %.3f s, duration %.3f s\n', ...
+    seg_t_start, seg_t_end, ts(end));
 
-r13_filt_dd_filt = movmean(r13_filt_dd, dd_filter_window);
-r23_filt_dd_filt = movmean(r23_filt_dd, dd_filter_window);
+% Cut signals (force column vectors).
+x_raw  = mocap_x_raw(idx_seg).';
+x_filt = mocap_x_filt(idx_seg).';
+y_raw  = mocap_y_raw(idx_seg).';
+y_filt = mocap_y_filt(idx_seg).';
 
+r13_raw  = R13(idx_seg).';
+r13_filt = R13_filt(idx_seg).';
+r23_raw  = R23(idx_seg).';
+r23_filt = R23_filt(idx_seg).';
 
-% ---------- Plot selected yawrate ----------
-figure('Name','Selected Segment Yawrate','NumberTitle','off');
+vx_filt_seg = mocap_vx_filt(idx_seg).';
+vy_filt_seg = mocap_vy_filt(idx_seg).';
 
-plot(t, yawrate_filt_cut, 'LineWidth', 1.5);
-grid on;
-xlabel('Time after yawrate threshold (s)');
-ylabel('mocap yawrate filtered (deg/s)');
-title(sprintf('Selected Segment: %.2f s to %.2f s', t_start, t_end));
+r13_d_filt_seg = R13_d_filt(idx_seg).';
+r23_d_filt_seg = R23_d_filt(idx_seg).';
 
-% ---------- Plot X ----------
-figure('Name','Mocap X raw/filt and derivatives','NumberTitle','off');
+yawrate_filt_seg = mocap_yawrate_deg_filt(idx_seg).';
 
-subplot(3,1,1);
-plot(t, x_raw, 'LineWidth', 1.0);
-hold on;
-plot(t, x_filt, 'LineWidth', 1.5);
-grid on;
-ylabel('X (m)');
-title('Mocap X');
-legend('x raw', 'x filt');
+% Smoothing window for derivatives computed here.
+deriv_smooth_window = 11;
 
-subplot(3,1,2);
-plot(t, x_raw_d, 'LineWidth', 1.0);
-hold on;
-%plot(t, x_filt_d, 'LineWidth', 1.5);
-plot(t, mocap_vx_filt, 'LineWidth', 1.5);
-grid on;
-ylabel('dX/dt (m/s)');
-legend('x raw dot', 'x filt dot');
+% First derivatives.
+x_filt_d = movmean(gradient(x_filt, ts), deriv_smooth_window);
+y_filt_d = movmean(gradient(y_filt, ts), deriv_smooth_window);
 
-subplot(3,1,3);
-plot(t, r13_filt*10, 'LineWidth', 1.0);
-hold on;
-plot(t, x_filt_dd, 'LineWidth', 1.5);
-plot(t, x_filt_dd_filt, 'LineWidth', 1.8);
-grid on;
-ylabel('d2X/dt2 (m/s^2)');
-xlabel('Time after yawrate threshold (s)');
-legend('x raw ddot', 'x filt ddot');
+% Second derivatives.
+x_filt_dd        = gradient(x_filt_d, ts);
+x_filt_dd_smooth = movmean(x_filt_dd, deriv_smooth_window);
+y_filt_dd        = gradient(y_filt_d, ts);
+y_filt_dd_smooth = movmean(y_filt_dd, deriv_smooth_window);
 
-% ---------- Plot Y ----------
-figure('Name','Mocap Y raw/filt and derivatives','NumberTitle','off');
+r13_d_filt_smooth = movmean(r13_d_filt_seg, deriv_smooth_window);
+r23_d_filt_smooth = movmean(r23_d_filt_seg, deriv_smooth_window);
+r13_dd_smooth     = movmean(gradient(r13_d_filt_smooth, ts), deriv_smooth_window);
+r23_dd_smooth     = movmean(gradient(r23_d_filt_smooth, ts), deriv_smooth_window);
 
-subplot(3,1,1);
-plot(t, y_raw, 'LineWidth', 1.0);
-hold on;
-plot(t, y_filt, 'LineWidth', 1.5);
-grid on;
-ylabel('Y (m)');
-title('Mocap Y');
-legend('y raw', 'y filt');
+% ---------- Segment yaw rate ----------
+figure('Name','Segment: yaw rate','NumberTitle','off');
+plot(ts, yawrate_filt_seg, 'LineWidth', 1.5); grid on;
+xlabel('Time after threshold [s]'); ylabel('Yaw rate (filtered) [deg/s]');
+title(sprintf('Segment: %.2f s to %.2f s', seg_t_start, seg_t_end));
 
-subplot(3,1,2);
-plot(t, y_raw_d, 'LineWidth', 1.0);
-hold on;
-%plot(t, y_filt_d, 'LineWidth', 1.5);
-plot(t, mocap_vy_filt, 'LineWidth', 1.5);
-grid on;
-ylabel('dY/dt (m/s)');
-legend('y raw dot', 'y filt dot');
+% ---------- Segment X ----------
+figure('Name','Segment: X and derivatives','NumberTitle','off');
+tiledlayout(3,1);
 
-subplot(3,1,3);
-plot(t, r23_filt*10, 'LineWidth', 1.0);
-hold on;
-plot(t, y_filt_dd, 'LineWidth', 1.5);
-plot(t, y_filt_dd_filt, 'LineWidth', 1.8);
-grid on;
-ylabel('d2Y/dt2 (m/s^2)');
-xlabel('Time after yawrate threshold (s)');
-legend('y raw ddot', 'y filt ddot');
+nexttile;
+plot(ts, x_raw,  'LineWidth', 1.0); hold on;
+plot(ts, x_filt, 'LineWidth', 1.6);
+grid on; ylabel('X [m]'); title('Mocap X');
+legend('x (raw)','x (filtered)');
 
-% ---------- Plot R13 ----------
-figure('Name','R13 raw/filt and derivatives','NumberTitle','off');
+nexttile;
+plot(ts, x_filt_d,    'LineWidth', 1.6); hold on;
+plot(ts, vx_filt_seg, 'LineWidth', 1.2);
+grid on; ylabel('dX/dt [m/s]');
+legend('x rate (from filtered X)','vx (logged filter)');
 
-subplot(3,1,1);
-plot(t, r13_raw, 'LineWidth', 1.0);
-hold on;
-plot(t, r13_filt, 'LineWidth', 1.5);
-grid on;
-ylabel('R13');
-title('R13');
-legend('R13 raw', 'R13 filt');
+nexttile;
+plot(ts, x_filt_dd,        'LineWidth', 1.0); hold on;
+plot(ts, x_filt_dd_smooth, 'LineWidth', 1.8);
+grid on; ylabel('d^2X/dt^2 [m/s^2]'); xlabel('Time after threshold [s]');
+legend('x accel','x accel (smoothed)');
 
-subplot(3,1,2);
-plot(t, r13_filt_d_filt, 'LineWidth', 1.0);
-hold on;
-%plot(t, r13_filt_d, 'LineWidth', 1.5);
-plot(t, R13_d_filt, 'LineWidth', 1.5);
-grid on;
-ylabel('dR13/dt');
-legend('r13 raw dot', 'R13 filt dot');
+% ---------- Segment Y ----------
+figure('Name','Segment: Y and derivatives','NumberTitle','off');
+tiledlayout(3,1);
 
-subplot(3,1,3);
-plot(t, r13_filt_dd_filt, 'LineWidth', 1.0);
-hold on;
-plot(t, r13_filt_dd, 'LineWidth', 1.5);
-grid on;
-ylabel('d2R13/dt2');
-xlabel('Time after yawrate threshold (s)');
-legend('R13 filt ddot filt', 'R13 filt ddot');
+nexttile;
+plot(ts, y_raw,  'LineWidth', 1.0); hold on;
+plot(ts, y_filt, 'LineWidth', 1.6);
+grid on; ylabel('Y [m]'); title('Mocap Y');
+legend('y (raw)','y (filtered)');
 
-% ---------- Plot R23 ----------
-figure('Name','R23 raw/filt and derivatives','NumberTitle','off');
+nexttile;
+plot(ts, y_filt_d,    'LineWidth', 1.6); hold on;
+plot(ts, vy_filt_seg, 'LineWidth', 1.2);
+grid on; ylabel('dY/dt [m/s]');
+legend('y rate (from filtered Y)','vy (logged filter)');
 
-subplot(3,1,1);
-plot(t, r23_raw, 'LineWidth', 1.0);
-hold on;
-plot(t, r23_filt, 'LineWidth', 1.5);
-grid on;
-ylabel('R23');
-title('R23');
-legend('R23 raw', 'R23 filt');
+nexttile;
+plot(ts, y_filt_dd,        'LineWidth', 1.0); hold on;
+plot(ts, y_filt_dd_smooth, 'LineWidth', 1.8);
+grid on; ylabel('d^2Y/dt^2 [m/s^2]'); xlabel('Time after threshold [s]');
+legend('y accel','y accel (smoothed)');
 
-subplot(3,1,2);
-plot(t, r23_filt_d_filt, 'LineWidth', 1.0);
-hold on;
-%plot(t, r23_filt_d, 'LineWidth', 1.5);
-plot(t, R23_d_filt, 'LineWidth', 1.5);
-grid on;
-ylabel('dR23/dt');
-legend('R23 filt dot filt', 'R23 filt dot');
+% ---------- Segment R13 ----------
+figure('Name','Segment: R13 and derivatives','NumberTitle','off');
+tiledlayout(3,1);
 
-subplot(3,1,3);
-plot(t, r23_filt_dd_filt, 'LineWidth', 1.0);
-hold on;
-plot(t, r23_filt_dd, 'LineWidth', 1.5);
-grid on;
-ylabel('d2R23/dt2');
-xlabel('Time after yawrate threshold (s)');
-legend('R23 filt ddot filt', 'R23 filt ddot');
+nexttile;
+plot(ts, r13_raw,  'LineWidth', 1.0); hold on;
+plot(ts, r13_filt, 'LineWidth', 1.6);
+grid on; ylabel('R13'); title('R13');
+legend('R13 (raw)','R13 (filtered)');
+
+nexttile;
+plot(ts, r13_d_filt_seg,    'LineWidth', 1.0); hold on;
+plot(ts, r13_d_filt_smooth, 'LineWidth', 1.6);
+grid on; ylabel('dR13/dt');
+legend('R13 rate (logged filter)','R13 rate (smoothed)');
+
+nexttile;
+plot(ts, r13_dd_smooth, 'LineWidth', 1.6);
+grid on; ylabel('d^2R13/dt^2'); xlabel('Time after threshold [s]');
+legend('R13 accel (smoothed)');
+
+% ---------- Segment R23 ----------
+figure('Name','Segment: R23 and derivatives','NumberTitle','off');
+tiledlayout(3,1);
+
+nexttile;
+plot(ts, r23_raw,  'LineWidth', 1.0); hold on;
+plot(ts, r23_filt, 'LineWidth', 1.6);
+grid on; ylabel('R23'); title('R23');
+legend('R23 (raw)','R23 (filtered)');
+
+nexttile;
+plot(ts, r23_d_filt_seg,    'LineWidth', 1.0); hold on;
+plot(ts, r23_d_filt_smooth, 'LineWidth', 1.6);
+grid on; ylabel('dR23/dt');
+legend('R23 rate (logged filter)','R23 rate (smoothed)');
+
+nexttile;
+plot(ts, r23_dd_smooth, 'LineWidth', 1.6);
+grid on; ylabel('d^2R23/dt^2'); xlabel('Time after threshold [s]');
+legend('R23 accel (smoothed)');

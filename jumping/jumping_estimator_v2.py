@@ -1924,8 +1924,12 @@ class BiController:
         self.logging_data = [0.0] * len(self.logging_list)
 
     def update(self, desired_x, desired_y, desired_z, R13, R23, x, y, z, x_dot, y_dot, z_dot, yaw_deg, dt):
-        # Left stick maps to desired R13/R23 references
-
+        # Position PD -> desired R13/R23 tilt reference.
+        # Sign chain (verified in flight via JBI, which shares the same effective
+        # inner loop): positive desired_r13 tilts the vehicle toward +X, so a +X
+        # position error must produce a POSITIVE tilt reference. Note the inner
+        # loop below uses a leading minus with a NEGATIVE r13_r23_kp (double
+        # negative), matching JBI's positive-kp convention exactly.
         self.desired_r13 = self.xy_kp * (desired_x - x) - self.xy_kd * x_dot
         self.desired_r23 = self.xy_kp * (desired_y - y) - self.xy_kd * y_dot
 
@@ -2763,6 +2767,12 @@ class RealTimeProcessor(object):
         self.QY = 0
         self.QZ = 0
         self.QW = 1
+        # Velocities are normally set in _step_chunk; initialise here so that a
+        # missing/short packet (e.g. an out-of-range body_index that returns
+        # early from step) can't raise AttributeError on VX/VY/VZ.
+        self.VX = 0.0
+        self.VY = 0.0
+        self.VZ = 0.0
 
         self._t_prev = None  # previous mocap timestamp (udp_time) for derivatives
 
