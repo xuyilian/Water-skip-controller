@@ -50,6 +50,14 @@
 #define PM_BAT_LOW_TIMEOUT            M2T(1000 * DEFAULT_BAT_LOW_DURATION_TO_TRIGGER_SEC)
 #define PM_SYSTEM_SHUTDOWN_TIMEOUT    M2T(1000 * 60 * DEFAULT_SYSTEM_SHUTDOWN_TIMEOUT_MIN)
 
+// Scale applied to the syslink vBat reading on Bolt, whose multi-cell pack is
+// measured through a divider. 1S platforms report the cell voltage directly
+// and must not be scaled, or the low-voltage limits and the thrust battery
+// compensation in stabilizer.c would both be wrong.
+#ifndef PM_VBAT_SYSLINK_SCALE
+#  define PM_VBAT_SYSLINK_SCALE 3.64f
+#endif
+
 typedef struct _PmSyslinkInfo
 {
   union
@@ -281,8 +289,14 @@ void pmSyslinkUpdate(SyslinkPacket *slp)
     if (isExtBatVoltDeckPinSet) {
       pmSetBatteryVoltage(extBatteryVoltage);
     } else {
-      //pmSetBatteryVoltage(pmSyslinkInfo.vBat);
-      pmSetBatteryVoltage(pmSyslinkInfo.vBat*3.64f);//for bolt
+#ifdef CONFIG_PLATFORM_BOLT
+      // Bolt runs a multi-cell pack behind a divider, so the raw syslink
+      // reading has to be scaled back up to the real pack voltage.
+      pmSetBatteryVoltage(pmSyslinkInfo.vBat * PM_VBAT_SYSLINK_SCALE);
+#else
+      // 1S platforms (cf2 / cf21bl) report the cell voltage directly.
+      pmSetBatteryVoltage(pmSyslinkInfo.vBat);
+#endif
     }
 
 #ifdef PM_SYSTLINK_INLCUDE_TEMP
