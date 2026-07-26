@@ -281,7 +281,8 @@ void pmSyslinkUpdate(SyslinkPacket *slp)
     if (isExtBatVoltDeckPinSet) {
       pmSetBatteryVoltage(extBatteryVoltage);
     } else {
-      pmSetBatteryVoltage(pmSyslinkInfo.vBat);
+      //pmSetBatteryVoltage(pmSyslinkInfo.vBat);
+      pmSetBatteryVoltage(pmSyslinkInfo.vBat*3.64f);//for bolt
     }
 
 #ifdef PM_SYSTLINK_INLCUDE_TEMP

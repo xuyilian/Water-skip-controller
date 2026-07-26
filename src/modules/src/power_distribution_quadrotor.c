@@ -48,6 +48,11 @@
 
 static uint32_t idleThrust = DEFAULT_IDLE_THRUST;
 
+// Manual override for the M2/M4 pair. Negative (default) keeps the normal
+// mixer output. When set to 0..65535 the final PWM of M2 and M4 is forced to
+// that value, while M1/M3 keep running through the untouched pipeline.
+static int32_t m24Thrust = -1;
+
 int powerDistributionMotorType(uint32_t id)
 {
   return 1;
@@ -161,11 +166,20 @@ bool powerDistributionCap(const motors_thrust_uncapped_t* motorThrustBatCompUnca
 {
   const int32_t maxAllowedThrust = UINT16_MAX;
   bool isCapped = false;
+  const bool m24Override = (m24Thrust >= 0);
 
   // Find highest thrust
   int32_t highestThrustFound = 0;
   for (int motorIndex = 0; motorIndex < STABILIZER_NR_OF_MOTORS; motorIndex++)
   {
+    // While M2/M4 are forced their mixer values are never output, so they must
+    // not drive the reduction - otherwise a large phantom value on M2/M4 drags
+    // M1/M3 down (potentially all the way to idle) for no reason.
+    if (m24Override && (motorIndex == 1 || motorIndex == 3))
+    {
+      continue;
+    }
+
     const int32_t thrust = motorThrustBatCompUncapped->list[motorIndex];
     if (thrust > highestThrustFound)
     {
@@ -184,6 +198,14 @@ bool powerDistributionCap(const motors_thrust_uncapped_t* motorThrustBatCompUnca
   {
     int32_t thrustCappedUpper = motorThrustBatCompUncapped->list[motorIndex] - reduction;
     motorPwm->list[motorIndex] = capMinThrust(thrustCappedUpper, powerDistributionGetIdleThrust());
+  }
+
+  // Manual M2/M4 override, applied last so it is the exact commanded value
+  // (no battery compensation, no reduction, no idle floor).
+  if (m24Override) {
+    uint16_t forced = (m24Thrust > UINT16_MAX) ? UINT16_MAX : (uint16_t)m24Thrust;
+    motorPwm->motors.m2 = forced;
+    motorPwm->motors.m4 = forced;
   }
 
   return isCapped;
@@ -214,4 +236,14 @@ PARAM_GROUP_START(powerDist)
  * common value is between 3000 - 6000.
  */
 PARAM_ADD_CORE(PARAM_UINT32 | PARAM_PERSISTENT, idleThrust, &idleThrust)
+
+/**
+ * @brief Manual thrust for the M2/M4 pair (default: -1 = disabled)
+ *
+ * Negative keeps the normal mixer output for all four motors. Set to
+ * 0..65535 to force the final PWM of M2 and M4 to that value; M1 and M3
+ * keep their normal mixed output unchanged. Not persistent, so a reboot
+ * always returns to normal mixing.
+ */
+PARAM_ADD(PARAM_INT32, m24Thrust, &m24Thrust)
 PARAM_GROUP_STOP(powerDist)
