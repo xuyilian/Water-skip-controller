@@ -88,13 +88,15 @@ MACHINES = [
     {
         'name': 'cf2',
         'radio_channel': 60,          # -> radio://0/<ch>/2M
-        'thrust_base': 35000,         # HEIGHT_THRUST_BASE (JBI/BI/FBI)
-        'manual_base_thrust': 35000,  # MANUAL_BASE_THRUST (manual mode)
+        'thrust_base': 45000,         # HEIGHT_THRUST_BASE (JBI/BI/FBI)
+        'manual_base_thrust': 45000,  # MANUAL_BASE_THRUST (manual mode)
         'yaw_offset_deg': 50 ,       # added to mocap yaw before send
-        'fixed_yawrate_deg': -4800.0, # R_LMS_FIXED_YAWRATE_DEG (LMS estimator)
+        'fixed_yawrate_deg': -5800.0, # R_LMS_FIXED_YAWRATE_DEG (LMS estimator)
         'bi_r13_r23_kp': -25.5,        # BI controller r13_r23_kp
         'bi_xy_kp': 0.35,              # BI controller xy_kp
         'bi_xy_kd': 0.6,             # BI controller xy_kd
+        'm24_thrust': 20000,          # powerDist.m24Thrust: force M2/M4 PWM
+                                      # (-1 = normal mixing, M1/M3 unchanged)
     },
     {
         'name': 'cf2bl',
@@ -106,6 +108,7 @@ MACHINES = [
         'bi_r13_r23_kp': -2.5,        # TODO: calibrate for machine 2
         'bi_xy_kp': 0.15,              # TODO: calibrate for machine 2
         'bi_xy_kd': 0.15,             # TODO: calibrate for machine 2
+        'm24_thrust': 20000,             # normal mixing (no M2/M4 override)
     },
 ]
 
@@ -182,7 +185,8 @@ def select_machine(PJ: PygameJoystick, machines):
         f'thrust_base {m["thrust_base"]}, '
         f'manual_base {m["manual_base_thrust"]}, '
         f'yaw_offset {m["yaw_offset_deg"]}, '
-        f'fixed_yawrate {m["fixed_yawrate_deg"]}'
+        f'fixed_yawrate {m["fixed_yawrate_deg"]}, '
+        f'm24_thrust {m["m24_thrust"]}'
     )
     return m
 
@@ -266,7 +270,7 @@ if __name__ == '__main__':
     #   positive cmd_pitch pushes quadrotor to -Y axis
 
     # manual thrust limit
-    THRUST_MAX = 25000
+    THRUST_MAX = 65000
     THRUST_MIN = 0
 
     # manual mode thrust profile:
@@ -275,7 +279,7 @@ if __name__ == '__main__':
     #   >7 s: right stick adjusts desired_z, height PD outputs thrust
     MANUAL_BASE_THRUST = machine['manual_base_thrust']
     MANUAL_RAMP_TIME = 10.0
-    MANUAL_THRUST_MIN = 10000
+    MANUAL_THRUST_MIN = 30000
     MANUAL_JOYSTICK_RP_SCALE = 15
 
     # right stick Y integrates desired_z over time
@@ -292,7 +296,7 @@ if __name__ == '__main__':
     # Shared height PD parameters for JBI / BI / FBI.
     HEIGHT_THRUST_BASE = machine['thrust_base']
     HEIGHT_THRUST_MIN = 3000
-    HEIGHT_THRUST_MAX = 60000
+    HEIGHT_THRUST_MAX = 65000
     HEIGHT_Z_KP = 23000.0
     HEIGHT_Z_KI = 0.0
     HEIGHT_Z_KD = 10000.0
@@ -302,6 +306,9 @@ if __name__ == '__main__':
     BI_R13_R23_KP = machine['bi_r13_r23_kp']
     BI_XY_KP = machine['bi_xy_kp']
     BI_XY_KD = machine['bi_xy_kd']
+
+    # Firmware powerDist.m24Thrust (per-machine): forced M2/M4 PWM, -1 = off
+    M24_THRUST = machine['m24_thrust']
 
     # DROP / hop mode: cut to the lowest thrust so the MAV falls into the hop,
     # but keep the rotors spinning at the idle floor (powerDist.idleThrust is
@@ -475,6 +482,20 @@ if __name__ == '__main__':
         print('powerDist.idleThrust -> 6000')
     except Exception as e:
         print(f'[WARN] failed to set powerDist.idleThrust: {e}')
+
+    # Per-machine M2/M4 override: forces the final PWM of M2 and M4 while M1/M3
+    # keep their normal mixed output. -1 restores normal mixing. The firmware
+    # param is not persistent, so it is pushed on every run.
+    try:
+        lc.cf.param.set_value('powerDist.m24Thrust', str(M24_THRUST))
+        time.sleep(0.1)
+        if M24_THRUST >= 0:
+            print(f'powerDist.m24Thrust -> {M24_THRUST} '
+                  f'(M2/M4 forced, M1/M3 normal)')
+        else:
+            print('powerDist.m24Thrust -> -1 (normal mixing)')
+    except Exception as e:
+        print(f'[WARN] failed to set powerDist.m24Thrust: {e}')
 
     # ---------------- data saver ----------------
     saver = None
