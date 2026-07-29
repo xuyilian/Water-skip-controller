@@ -1,3 +1,28 @@
+# =============================================================================
+# revolvingdario.py -- water-hop flight controller
+#
+# Joystick-teleoperated Crazyflie flight script for the water-skipping MAV.
+# Supports several vehicles/boards (see MACHINES) and drives them through a
+# hop experiment cycle -- manual takeoff, closed-loop position hold, and a
+# DROP mode that releases the vehicle into the water hop -- while logging
+# telemetry to a .mat file for offline analysis (see analyse.m).
+#
+# File map (top to bottom):
+#   1. Imports
+#   2. Helpers: robot_stop(), SetpointSender (radio-sender thread)
+#   3. Per-machine hardware config: MACHINES
+#   4. Mocap rigid-body selection: select_rigid_body()
+#   5. Crazyflie selection: select_machine()
+#   6. Shared height-PID helper: height_pd_thrust()
+#   7. Main script (under `if __name__ == '__main__':`):
+#        7a. Startup selection (machine, drone body, pool body)
+#        7b. Configuration constants (joystick scaling, mode gains, etc.)
+#        7c. Init (controllers, estimators, mocap receiver, logging, connect)
+#        7d. Runtime state (mutated by the main loop)
+#        7e. Main control loop
+#        7f. Shutdown / cleanup
+# =============================================================================
+
 import atexit
 import os
 import threading
@@ -18,6 +43,10 @@ from jumping.jumping_estimator_v2 import JoyBiController
 from jumping.jumping_estimator_v2 import FittedBiController
 from jumping.jumping_estimator_v2 import RProjectionLmsEstimator
 
+
+# =============================================================================
+# Helpers: motor stop + radio setpoint sender thread
+# =============================================================================
 
 def robot_stop(lc: LoggingCore):
     # stop motors safely
@@ -80,10 +109,13 @@ class SetpointSender(threading.Thread):
         self._stop_evt.set()
 
 
-# ---------------- per-machine parameters ----------------
-# Two Crazyflies differ in radio channel, thrust trim and yaw mount.
-# Each entry bundles the machine-specific settings; pick one at startup
-# with select_machine() (Option to toggle, Cross to confirm).
+# =============================================================================
+# Per-machine hardware configuration
+# =============================================================================
+# Each MACHINES entry bundles ALL settings specific to one physical vehicle:
+# radio channel, thrust trim, yaw mount offset, BI/height gains, and (for the
+# tangential-spin board) mixer/spin-thrust params. Pick one at startup with
+# select_machine() (Option to toggle, Cross to confirm).
 MACHINES = [
     {
         'name': 'cf2',
@@ -95,6 +127,12 @@ MACHINES = [
         'bi_r13_r23_kp': -25.5,        # BI controller r13_r23_kp
         'bi_xy_kp': 0.35,              # BI controller xy_kp
         'bi_xy_kd': 0.6,             # BI controller xy_kd
+        'height_z_kp': 23000.0,        # height PID (JBI/BI/FBI/manual joystick stage)
+        'height_z_ki': 0.0,
+        'height_z_kd': 10000.0,
+        'height_z_int_limit': 1.0,
+        'height_thrust_min': 3000,
+        'height_thrust_max': 60000,
     },
     {
         'name': 'cf2bl',
@@ -106,11 +144,114 @@ MACHINES = [
         'bi_r13_r23_kp': -2.5,        # TODO: calibrate for machine 2
         'bi_xy_kp': 0.15,              # TODO: calibrate for machine 2
         'bi_xy_kd': 0.15,             # TODO: calibrate for machine 2
+        'height_z_kp': 23000.0,        # TODO: calibrate for machine 2
+        'height_z_ki': 0.0,            # TODO: calibrate for machine 2
+        'height_z_kd': 10000.0,        # TODO: calibrate for machine 2
+        'height_z_int_limit': 1.0,     # TODO: calibrate for machine 2
+        'height_thrust_min': 3000,     # TODO: calibrate for machine 2
+        'height_thrust_max': 60000,    # TODO: calibrate for machine 2
+    },
+    {
+        # Tangential-spin board on the Crazyflie 2.1 BRUSHLESS platform: 2
+        # vertical lift rotors (motors 1 & 3) + 2 tangential yaw-spin rotors
+        # (motors 2 & 4, fixed thrust, no lift/attitude authority) -- motor
+        # numbering confirmed via cfclient's motor-power-set-index test,
+        # 2026-07-23. See power_distribution_quadrotor.c
+        # (powerDistributionTangentialSpin) for the firmware-side mixer --
+        # unchanged by the brushless switch, it applies to PLATFORM_CF21BL
+        # exactly the same as PLATFORM_CF2.
+        #
+        # IMPORTANT: this board runs DIFFERENT FIRMWARE. Build with
+        # `make cf21bl_defconfig && make`, which produces build/cf21bl.bin
+        # (NOT cf2.bin) -- flash that file, not the cf2 build.
+        #
+        # Every value below is a first-guess placeholder and needs FULL
+        # recalibration on the bench: brushless motors on DSHOT have a
+        # fundamentally different thrust curve than the old brushed/
+        # OneShot125 motors these numbers were guessed from -- do not trust
+        # any of them as a starting altitude, ramp up from a low value.
+        'name': 'cf21blspin',
+        'radio_channel': 80,          # confirmed -- this board is on channel 80
+        'thrust_base': 23000,         # TODO: recalibrate from scratch -- brushless thrust curve, not brushed
+        'manual_base_thrust': 23000,  # TODO: recalibrate from scratch, same reason
+        'yaw_offset_deg': 30,         # TODO: recalibrate on bench
+        'fixed_yawrate_deg': -6000.0, # TODO: recalibrate -- spin comes from dedicated tangential thrust, not prop reaction torque
+        'bi_r13_r23_kp': -25.5,       # TODO: recalibrate
+        'bi_xy_kp': 0.35,             # TODO: recalibrate
+        'bi_xy_kd': 0.6,              # TODO: recalibrate
+        'mixer_type': 1,              # selects powerDistributionTangentialSpin in firmware
+        'spin_thrust': 30000,         # TODO: bench-tune from scratch -- fixed thrust for motors 2 & 4, brushless DSHOT curve
+        'drop_spin_thrust': 30000,    # TODO: tune separately from spin_thrust -- motors 2/4 thrust during DROP mode only
+        'motor_thrust_ceiling': 60000, # per-motor max thrust, this board
+        'idle_thrust': 7000,          # TODO: bench-tune -- DSHOT/brushless idle floor differs from the 6000 brushed default sent elsewhere
+        # Height PID: copied from cf2 as a STARTING POINT only. This board has
+        # only 2 lift motors (half of cf2's 4) on a different motor
+        # technology (brushless/DSHOT vs brushed/OneShot125), so its thrust-
+        # per-height-error response has no reason to match cf2's -- treat
+        # these as unverified and retune from scratch on the bench.
+        'height_z_kp': 24000.0,        # TODO: recalibrate from scratch
+        'height_z_ki': 0.0,            # TODO: recalibrate from scratch
+        'height_z_kd': 10000.0,        # TODO: recalibrate from scratch
+        'height_z_int_limit': 1.0,     # TODO: recalibrate from scratch
+        'height_thrust_min': 3000,     # TODO: recalibrate from scratch
+        'height_thrust_max': 60000,    # TODO: recalibrate from scratch
+    },
+    {
+        # Tangential-spin board on the Crazyflie BOLT platform: same physical
+        # motors/props/hydrofoils/frame as cf21blspin above (2 vertical lift
+        # rotors m1/m3 + 2 tangential yaw-spin rotors m2/m4, fixed thrust) --
+        # only the flight-controller board changed. Reason: the CF2.1
+        # Brushless board (cf21blspin) is CONFIRMED BROKEN hardware (never a
+        # firmware/software issue) and was replaced with this Bolt board.
+        #
+        # M1 history, 2026-07: this exact Bolt board's M1 signal line
+        # wouldn't drive its motor (self-test flutter worked, but neither
+        # cfclient's motor-power-set-index test nor Python could spin it).
+        # Root cause found and fixed: a burnt resistor on M1's signal path.
+        # M1 is now confirmed working -- this entry assumes that fix is in
+        # place. If M1 misbehaves again, suspect the resistor/solder joint
+        # again before suspecting firmware.
+        #
+        # IMPORTANT: this board runs DIFFERENT FIRMWARE (same mixer source,
+        # different platform target). Build with `make bolt_defconfig &&
+        # make`, which produces build/bolt.bin (NOT cf2.bin/cf21bl.bin) --
+        # flash that file for this board.
+        #
+        # Values below are copied from cf21blspin as a first-guess starting
+        # point (same motors/geometry) -- cf21blspin itself was NEVER
+        # flight-validated (its board was broken), so treat every number here
+        # as an untested placeholder needing full bench recalibration, same
+        # caution as cf21blspin. Also bench-re-verify the m1/m3 vs m2/m4
+        # motor-role mapping and corner positions on THIS physical board
+        # before flying -- the wiring harness moved to a new connector set.
+        'name': 'bolt',
+        'radio_channel': 70,           # custom channel for this board
+        'radio_address': 'E7E7E7E7E7', # note: this is actually the Crazyflie DEFAULT address
+        'thrust_base': 18000,          # TODO: recalibrate from scratch
+        'manual_base_thrust': 18000,   # TODO: recalibrate from scratch
+        'yaw_offset_deg': 80,          # TODO: recalibrate on bench
+        'fixed_yawrate_deg': -8700.0,  # TODO: recalibrate
+        'bi_r13_r23_kp': -25.5,        # TODO: recalibrate
+        'bi_xy_kp': 0.2,              # TODO: recalibrate
+        'bi_xy_kd': 0.3,               # TODO: recalibrate
+        'mixer_type': 1,               # selects powerDistributionTangentialSpin in firmware
+        'spin_thrust': 40000,          # TODO: bench-tune from scratch
+        'drop_spin_thrust': 40000,     # TODO: tune separately from spin_thrust -- motors 2/4 thrust during DROP mode only
+        'motor_thrust_ceiling': 65535, # per-motor max thrust, this board
+        'idle_thrust': 6000,           # TODO: bench-tune
+        'height_z_kp': 20000.0,        # TODO: recalibrate from scratch
+        'height_z_ki': 0.0,            # TODO: recalibrate from scratch
+        'height_z_kd': 13000.0,        # TODO: recalibrate from scratch
+        'height_z_int_limit': 1.0,     # TODO: recalibrate from scratch
+        'height_thrust_min': 3000,     # TODO: recalibrate from scratch
+        'height_thrust_max': 65535,    # TODO: recalibrate from scratch
     },
 ]
 
 
-# ---------------- mocap rigid body selection ----------------
+# =============================================================================
+# Mocap rigid-body selection
+# =============================================================================
 # The mocap volume can hold several rigid bodies at once (parallel experiments,
 # plus the pool). body_index is 1-based: index k reads the k-th rigid body in
 # the stream. Selectors are ALWAYS shown so you pick both the DRONE body and
@@ -154,6 +295,10 @@ def select_rigid_body(PJ: PygameJoystick, indices, label='rigid body'):
     return idx
 
 
+# =============================================================================
+# Crazyflie machine selection
+# =============================================================================
+
 def select_machine(PJ: PygameJoystick, machines):
     """Pick which Crazyflie to fly.
 
@@ -187,6 +332,10 @@ def select_machine(PJ: PygameJoystick, machines):
     return m
 
 
+# =============================================================================
+# Shared height-PID helper (used by manual mode's joystick stage)
+# =============================================================================
+
 def height_pd_thrust(
         desired_z,
         z,
@@ -208,6 +357,7 @@ def height_pd_thrust(
         z_error_i + z_error * dt,
         z_int_limit,
         -z_int_limit,
+    
     )
     z_error_d = -z_dot
 
@@ -222,7 +372,15 @@ def height_pd_thrust(
     return thrust, z_error_i, z_error, z_error_d
 
 
+# =============================================================================
+# Main script
+# =============================================================================
 if __name__ == '__main__':
+
+    # -------------------------------------------------------------------
+    # 7a. Startup selection: machine, then drone rigid body, then pool
+    #     rigid body (all via the same joystick Option/Cross menu).
+    # -------------------------------------------------------------------
 
     # ---------------- machine selection ----------------
     # Initialize joystick and pick which Crazyflie to fly.
@@ -243,8 +401,18 @@ if __name__ == '__main__':
               f'({rigid_body_index}) — AUTOBI would chase the drone itself. '
               f'Fix in Motive or reboot and pick different indices.')
 
+    # -------------------------------------------------------------------
+    # 7b. Configuration constants. Everything from here down to the
+    #     "init" section below is pure config -- no hardware/radio side
+    #     effects yet.
+    # -------------------------------------------------------------------
+
     # ---------------- user config ----------------
     uri = f'radio://0/{machine["radio_channel"]}/2M'
+    # Bolt board runs a custom radio address (not the Crazyflie default) --
+    # append it only if the machine defines one.
+    if machine.get('radio_address'):
+        uri += f'/{machine["radio_address"]}'
 
     # per-machine yaw offset (deg) added to mocap yaw before sending
     YAW_OFFSET_DEG = machine['yaw_offset_deg']
@@ -275,7 +443,7 @@ if __name__ == '__main__':
     #   >7 s: right stick adjusts desired_z, height PD outputs thrust
     MANUAL_BASE_THRUST = machine['manual_base_thrust']
     MANUAL_RAMP_TIME = 10.0
-    MANUAL_THRUST_MIN = 10000
+    MANUAL_THRUST_MIN = 7000
     MANUAL_JOYSTICK_RP_SCALE = 15
 
     # right stick Y integrates desired_z over time
@@ -289,44 +457,81 @@ if __name__ == '__main__':
     DESIRED_XY_RATE = 0.5     # m/s when LeftStick is fully pushed
     DESIRED_XY_LIMIT = 1.5    # m, saturation bound on desired_x/desired_y
 
-    # Shared height PD parameters for JBI / BI / FBI.
+    # Height PD parameters (JBI / BI / FBI / manual joystick stage) -- per-
+    # machine, since lift-motor count/technology differs across boards (e.g.
+    # cf21blspin's 2 brushless lift motors vs cf2's 4 brushed ones).
     HEIGHT_THRUST_BASE = machine['thrust_base']
-    HEIGHT_THRUST_MIN = 3000
-    HEIGHT_THRUST_MAX = 60000
-    HEIGHT_Z_KP = 23000.0
-    HEIGHT_Z_KI = 0.0
-    HEIGHT_Z_KD = 10000.0
-    HEIGHT_Z_INT_LIMIT = 1.0
+    HEIGHT_THRUST_MIN = machine['height_thrust_min']
+    HEIGHT_THRUST_MAX = machine['height_thrust_max']
+    HEIGHT_Z_KP = machine['height_z_kp']
+    HEIGHT_Z_KI = machine['height_z_ki']
+    HEIGHT_Z_KD = machine['height_z_kd']
+    HEIGHT_Z_INT_LIMIT = machine['height_z_int_limit']
 
     # BI controller gains (per-machine)
     BI_R13_R23_KP = machine['bi_r13_r23_kp']
     BI_XY_KP = machine['bi_xy_kp']
     BI_XY_KD = machine['bi_xy_kd']
 
-    # DROP / hop mode: cut to the lowest thrust so the MAV falls into the hop,
-    # but keep the rotors spinning at the idle floor (powerDist.idleThrust is
-    # 6000 per rotor) so the vehicle doesn't shed too much yaw rate during the
-    # freefall. Tune on the bench if needed.
+    # DROP / hop mode: cut the LIFT motors (m1/m3) to a low thrust so the MAV
+    # falls into the hop, while the TANGENTIAL spin motors (m2/m4, tangential-
+    # spin boards only) keep spinning at their own separately-tuned rate so
+    # the vehicle doesn't shed yaw rate during the freefall. Two independent
+    # knobs:
+    #   - DROP_THRUST (below): sent as cmd_thrust every loop in DROP -> drives
+    #     m1/m3 (and, on the legacy mixer, all 4 motors -- there's no
+    #     separate tangential pair there, so DROP_THRUST alone applies).
+    #   - machine['drop_spin_thrust']: pushed to firmware ONCE, on entering
+    #     DROP (see the Triangle handler below), as a fresh powerDist.spinThrust
+    #     value -- independent of the normal flight spin_thrust. Restored to
+    #     the flight value if the cycle ever comes back around to 'manual'.
+    #     Only meaningful on tangential-spin boards (mixer_type 1); ignored
+    #     otherwise.
     DROP_THRUST = 8000
 
-    # Hop experiment cycle: manual -> JBI -> AUTOBI -> DROP -> manual.
+    # Hop experiment cycle: manual -> JBI -> BI -> AUTOBI -> DROP -> manual.
     #   Circle spins up (manual ramp),
-    #   Triangle #1 -> JBI    (fly up manually),
-    #   Triangle #2 -> AUTOBI (auto-position over the pool centre in X/Y, Z on
-    #                          the right stick / height-hold),
-    #   Triangle #3 -> DROP   (release into the water hop at lowest spin).
+    #   Triangle #1 -> JBI    (fly up manually; desired_z reset to
+    #                          JBI_INITIAL_HEIGHT on entry),
+    #   Triangle #2 -> BI     (hold a fixed (x, y) setpoint, reset to
+    #                          BI_INITIAL_X/Y on entry; right-stick-Z as usual;
+    #                          left stick still nudges x/y from there),
+    #   Triangle #3 -> AUTOBI (auto-locate the pool centre in X/Y only -- Z is
+    #                          untouched, left wherever BI/manual left it, same
+    #                          as legacy behavior; left stick can still nudge
+    #                          x/y off the found centre, same mechanism as BI),
+    #   Triangle #4 -> DROP   (release into the water hop; spin motors switch
+    #                          to drop_spin_thrust, lift motors cut to DROP_THRUST).
     # FBI is left OUT of the cycle; its controller code is kept but stale.
-    CONTROL_MODES = ('manual', 'JBI', 'AUTOBI', 'DROP')
+    CONTROL_MODES = ('manual', 'JBI', 'BI', 'AUTOBI', 'DROP')
     # Closed-loop (controller-driven) modes. AUTOBI reuses the BI controller
     # (XY position -> tilt, height PD for Z). FBI stays listed so its existing
     # code remains valid. DROP is open-loop (fixed low thrust), so it is NOT here.
     CLOSED_LOOP_MODES = ('JBI', 'BI', 'AUTOBI', 'FBI')
 
-    # ---- AUTOBI: pool-centre auto-locate ----
-    # The 50x50 cm water pool is defined in Motive as a single rigid body whose
-    # origin is at the pool centre (4 corner markers). Its stream index is
-    # pool_rigid_body_index, chosen at boot right after the drone body — both
-    # via the same Option/Cross menu. They must be DIFFERENT indices.
+    # (AUTOBI's pool-centre auto-locate behavior is implemented where its
+    # state variables are declared, in the runtime-state section below --
+    # see "AUTOBI pool-centre auto-locate state.")
+
+    # JBI: desired_z is reset to this the instant JBI is entered (Triangle
+    # #1), so every run starts each JBI stage from the same known altitude
+    # instead of whatever desired_z happened to be left at previously.
+    JBI_INITIAL_HEIGHT = 1
+
+    # BI: desired_x/desired_y are reset to this fixed (x, y) the instant BI is
+    # entered (Triangle #2) -- "a set coord" to hold before handing off to
+    # AUTOBI. Still nudgeable afterward via the left stick, same as always.
+    BI_INITIAL_X = 0.0
+    BI_INITIAL_Y = 0.0
+
+    # AUTOBI now does real pool-centre auto-locate (no fixed test target) --
+    # left as a toggle in case open-space bench testing without the pool is
+    # ever needed again. Z is unaffected either way -- it stays whatever it
+    # was left at entering AUTOBI (BI's height or manual/right-stick), and
+    # stays right-stick adjustable, matching the legacy behavior.
+    AUTOBI_USE_FIXED_TEST_TARGET = False
+    AUTOBI_TEST_X = 0.0
+    AUTOBI_TEST_Y = 0.0
 
     # Online LMS low-frequency estimator for R13/R23
     # Model:
@@ -347,12 +552,20 @@ if __name__ == '__main__':
     DERIV_FILTER_ALPHA = 0.5
     MOCAP_Z_FILTER_ALPHA = 0.3
 
+    # -------------------------------------------------------------------
+    # 7c. Init: edge detectors, controllers, estimators, mocap receiver,
+    #     onboard logging, Crazyflie connection, power-distribution params,
+    #     and the flight-data saver.
+    # -------------------------------------------------------------------
+
     # ---------------- init ----------------
+    # -- edge detectors & timing --
     RD_circle = RiseDetect()
     RD_triangle = RiseDetect()
 
     RTS = RealTimeSleeper(sample_time)
 
+    # -- attitude/position controllers (BI / JBI / FBI) --
     BI = BiController(
         r13_r23_kp=BI_R13_R23_KP,
         xy_cmd_limit=120,
@@ -367,7 +580,7 @@ if __name__ == '__main__':
         xy_kd=BI_XY_KD)
 
     JBI = JoyBiController(
-        r13_r23_kp=25,
+        r13_r23_kp=20,
         xy_cmd_limit=120.0,
         thrust_base=HEIGHT_THRUST_BASE,
         thrust_min=HEIGHT_THRUST_MIN,
@@ -376,8 +589,8 @@ if __name__ == '__main__':
         z_ki=HEIGHT_Z_KI,
         z_kd=HEIGHT_Z_KD,
         z_int_limit=HEIGHT_Z_INT_LIMIT,
-        joy_r13_gain=0.2,
-        joy_r23_gain=0.2,
+        joy_r13_gain=0.8,
+        joy_r23_gain=0.8,
         joy_deadzone=0.05,
         desired_r_limit=0.50,
     )
@@ -395,6 +608,7 @@ if __name__ == '__main__':
         g=9.81
     )
 
+    # -- R13/R23 and XY position LMS estimators --
     R_lms = RProjectionLmsEstimator(
         mu=R_LMS_MU,
         alpha=1.0,
@@ -414,6 +628,7 @@ if __name__ == '__main__':
         yaw_rate_alpha=0.3,
     )
 
+    # -- mocap UDP receiver & per-body unpackers --
     # UDP mocap, used for raw x/y/z, quaternion, and velocity input.
     if udp_enable_flag:
         UDP = UdpRigidBodies()
@@ -446,6 +661,7 @@ if __name__ == '__main__':
     # by AUTOBI to auto-locate the vehicle over the 50x50 cm pool.
     dp_pool = RealTimeProcessor(sample_rate_rt)
 
+    # -- onboard logging + Crazyflie connection --
     # Log battery voltage so we can watch for voltage sag under the revolving
     # load (fast-spinning props draw a lot of current). One float at ~10 Hz
     # keeps the added radio traffic negligible.
@@ -468,14 +684,44 @@ if __name__ == '__main__':
 
     print('Crazyflie connected, entering main loop ...')
 
-    # Set motor idle thrust before entering control loop
+    # -- power distribution parameters (idleThrust / mixerType / spinThrust / thrustCap) --
+    # Set motor idle thrust before entering control loop. Per-machine so the
+    # brushed (cf2/cf2bl, default 6000) and brushless/DSHOT (cf21blspin,
+    # needs its own bench-tuned value) boards don't share a floor that only
+    # makes sense for one motor technology.
     try:
-        lc.cf.param.set_value('powerDist.idleThrust', '6000')
+        idle_thrust = machine.get('idle_thrust', 6000)
+        lc.cf.param.set_value('powerDist.idleThrust', str(idle_thrust))
         time.sleep(0.1)
-        print('powerDist.idleThrust -> 6000')
+        print(f'powerDist.idleThrust -> {idle_thrust}')
     except Exception as e:
         print(f'[WARN] failed to set powerDist.idleThrust: {e}')
 
+    # Select the firmware motor mixer for this machine. powerDist.mixerType is
+    # NOT persistent (resets to 0/legacy on every boot), so it must be set
+    # explicitly every connection -- this is what lets one firmware image
+    # (cf2.bin) serve both the legacy 4-motor boards and the tangential-spin
+    # board, switched purely by which MACHINES entry you pick at startup.
+    try:
+        mixer_type = machine.get('mixer_type', 0)
+        lc.cf.param.set_value('powerDist.mixerType', str(mixer_type))
+        time.sleep(0.1)
+        print(f'powerDist.mixerType -> {mixer_type}')
+
+        if mixer_type == 1:
+            spin_thrust = machine['spin_thrust']
+            lc.cf.param.set_value('powerDist.spinThrust', str(spin_thrust))
+            time.sleep(0.1)
+            print(f'powerDist.spinThrust -> {spin_thrust}')
+
+        thrust_cap = machine.get('motor_thrust_ceiling', 65535)
+        lc.cf.param.set_value('powerDist.thrustCap', str(thrust_cap))
+        time.sleep(0.1)
+        print(f'powerDist.thrustCap -> {thrust_cap}')
+    except Exception as e:
+        print(f'[WARN] failed to set power distribution params: {e}')
+
+    # -- flight-data logging to .mat --
     # ---------------- data saver ----------------
     saver = None
     if save_data_enable:
@@ -511,6 +757,7 @@ if __name__ == '__main__':
 
     atexit.register(save_flight_data)
 
+    # -- radio setpoint sender thread --
     lc.cf.commander.send_setpoint(0, 0, 0, 0)
 
     # Decouple radio sending from the control loop: this thread always
@@ -522,6 +769,10 @@ if __name__ == '__main__':
     RTS.init()
     start_time = RTS.loop_start_time
 
+    # -------------------------------------------------------------------
+    # 7d. Runtime state -- everything below is mutated by the main loop.
+    # -------------------------------------------------------------------
+
     controllerEnable = False
     manual_start_time = None
     manual_stage = 'off'
@@ -529,7 +780,7 @@ if __name__ == '__main__':
     armed = False
 
     # control_mode cycle with Triangle:
-    #   manual -> JBI -> AUTOBI -> DROP -> manual
+    #   manual -> JBI -> BI -> AUTOBI -> DROP -> manual
     control_mode = 'manual'
 
     desired_x = 0.0
@@ -537,6 +788,13 @@ if __name__ == '__main__':
     desired_z = 1
 
     # AUTOBI pool-centre auto-locate state.
+    # The 50x50 cm water pool is defined in Motive as a single rigid body
+    # whose origin is at the pool centre (4 corner markers), streamed at
+    # pool_rigid_body_index (chosen at boot, right after the drone body --
+    # see the startup-selection section above; they must be DIFFERENT
+    # indices). AUTOBI captures this centre once on entry and holds it (see
+    # the main loop's AUTOBI branch) so a momentary marker dropout can't jump
+    # the target to (0,0).
     pool_x = 0.0            # live pool-centre X from the pool rigid body
     pool_y = 0.0            # live pool-centre Y
     pool_valid = False      # True once a non-trivial pool sample has been seen
@@ -574,6 +832,9 @@ if __name__ == '__main__':
     loop_flag = 0
     last_loop_abs_time = None
 
+    # =====================================================================
+    # 7e. MAIN CONTROL LOOP
+    # =====================================================================
     while lc.is_connected:
         loop_flag += 1
         Abs_time = RTS.loop_start_time - start_time
@@ -585,7 +846,7 @@ if __name__ == '__main__':
 
         PJ.step()
 
-        # toggle controller with Circle
+        # ---- toggle controller (Circle) ----
         if RD_circle.step(PJ.get_key('Circle')):
             controllerEnable = not controllerEnable
             if controllerEnable:
@@ -645,12 +906,28 @@ if __name__ == '__main__':
                 manual_z_error_i = 0.0
                 print('[manual] off stage: thrust = 0')
 
-        # cycle manual -> JBI -> AUTOBI -> DROP mode with Triangle
+        # ---- cycle control mode (Triangle): manual -> JBI -> BI -> AUTOBI -> DROP ----
         if RD_triangle.step(PJ.get_key('Triangle')):
             control_mode = CONTROL_MODES[
                 (CONTROL_MODES.index(control_mode) + 1) % len(CONTROL_MODES)
             ]
             print(f'control_mode -> {control_mode}')
+
+            if control_mode == 'JBI':
+                desired_z = JBI_INITIAL_HEIGHT
+                print(f'[JBI] desired_z reset to {JBI_INITIAL_HEIGHT:.2f} m')
+            elif control_mode == 'BI':
+                desired_x = BI_INITIAL_X
+                desired_y = BI_INITIAL_Y
+                print(f'[BI] desired_x/y reset to ({BI_INITIAL_X:.2f}, {BI_INITIAL_Y:.2f}) m')
+            elif control_mode == 'DROP':
+                drop_spin = machine.get('drop_spin_thrust')
+                if drop_spin is not None and machine.get('mixer_type', 0) == 1:
+                    try:
+                        lc.cf.param.set_value('powerDist.spinThrust', str(drop_spin))
+                        print(f'[DROP] powerDist.spinThrust -> {drop_spin}')
+                    except Exception as e:
+                        print(f'[WARN] failed to set DROP spinThrust: {e}')
 
             if controllerEnable and control_mode == 'manual':
                 manual_start_time = Abs_time
@@ -660,6 +937,15 @@ if __name__ == '__main__':
                     f'[manual] ramp stage: {MANUAL_THRUST_MIN} -> {MANUAL_BASE_THRUST} '
                     f'in {MANUAL_RAMP_TIME:.1f}s'
                 )
+                # Cycled all the way back around from DROP -- restore the
+                # normal flight spin thrust (only matters if it was ever
+                # switched away, i.e. the run went through DROP already).
+                if machine.get('mixer_type', 0) == 1:
+                    try:
+                        lc.cf.param.set_value('powerDist.spinThrust', str(machine['spin_thrust']))
+                        print(f"powerDist.spinThrust -> {machine['spin_thrust']} (restored)")
+                    except Exception as e:
+                        print(f'[WARN] failed to restore spinThrust: {e}')
             else:
                 if manual_stage != 'off':
                     print('[manual] off stage: thrust = 0')
@@ -667,7 +953,7 @@ if __name__ == '__main__':
                 manual_stage = 'off'
                 manual_z_error_i = 0.0
 
-        # emergency stop
+        # ---- emergency stop (Square) ----
         if PJ.get_key('Square'):
             R_lms.reset()
             XY_lms.reset()
@@ -843,6 +1129,10 @@ if __name__ == '__main__':
 
         # BI mode: integrate horizontal setpoint from the left stick over time.
         # Push LeftStick X/Y to walk desired_x/desired_y; release to hold.
+        # Y is negated to match JBI's and manual mode's LeftStick/RightStick-Y
+        # convention (JBI.update() passes -JSL_y; manual's cmd_pitch uses
+        # -JSL_y) -- without this, BI's up/down feel is reversed relative to
+        # every other mode. X needs no negation; it already matches everywhere.
         if controllerEnable and control_mode == 'BI':
             desired_x = saturation(
                 desired_x + JSL_x * DESIRED_XY_RATE * sample_time,
@@ -850,7 +1140,24 @@ if __name__ == '__main__':
                 -DESIRED_XY_LIMIT,
             )
             desired_y = saturation(
-                desired_y + JSL_y * DESIRED_XY_RATE * sample_time,
+                desired_y - JSL_y * DESIRED_XY_RATE * sample_time,
+                DESIRED_XY_LIMIT,
+                -DESIRED_XY_LIMIT,
+            )
+        # AUTOBI: same left-stick nudge mechanism as BI (same rate, same
+        # limit, same BiController gains -- AUTOBI is just BI with an
+        # auto-located starting target), applied on top of the captured pool
+        # centre so you can trim off the auto-locate result. Gated on
+        # autobi_captured so there's nothing to nudge before the pool is found
+        # (see the AUTOBI dispatch below, which owns the capture itself).
+        elif controllerEnable and control_mode == 'AUTOBI' and autobi_captured:
+            autobi_desired_x = saturation(
+                autobi_desired_x + JSL_x * DESIRED_XY_RATE * sample_time,
+                DESIRED_XY_LIMIT,
+                -DESIRED_XY_LIMIT,
+            )
+            autobi_desired_y = saturation(
+                autobi_desired_y - JSL_y * DESIRED_XY_RATE * sample_time,
                 DESIRED_XY_LIMIT,
                 -DESIRED_XY_LIMIT,
             )
@@ -918,25 +1225,31 @@ if __name__ == '__main__':
                           mocap_yaw_deg, sample_time)
                 active_controller = BI
             elif control_mode == 'AUTOBI':
-                # Auto-locate to the pool centre in X/Y (Z stays on the right
-                # stick via the shared height PD). Capture the pool centre once
-                # on entry and hold it, so a momentary marker dropout can't jump
-                # the target to (0,0).
-                if not autobi_captured:
-                    if pool_valid:
-                        autobi_desired_x = pool_x
-                        autobi_desired_y = pool_y
-                        autobi_captured = True
-                        print(f'[AUTOBI] pool centre captured: '
-                              f'x={autobi_desired_x:.3f}, y={autobi_desired_y:.3f}')
-                    else:
-                        # No pool sample yet: hold current position rather than
-                        # driving to the origin. Retry capture next loop.
-                        autobi_desired_x = mocap_x_filt
-                        autobi_desired_y = mocap_y_filt
-                        if loop_flag % 100 == 50:
-                            print(f'[AUTOBI] waiting for pool body '
-                                  f'{pool_rigid_body_index} — holding position')
+                if AUTOBI_USE_FIXED_TEST_TARGET:
+                    # Fixed test setpoint (see TEMPORARY TEST OVERRIDE above) --
+                    # pool-centre logic below is bypassed, not removed.
+                    autobi_desired_x = AUTOBI_TEST_X
+                    autobi_desired_y = AUTOBI_TEST_Y
+                else:
+                    # Auto-locate to the pool centre in X/Y (Z stays on the right
+                    # stick via the shared height PD). Capture the pool centre once
+                    # on entry and hold it, so a momentary marker dropout can't jump
+                    # the target to (0,0).
+                    if not autobi_captured:
+                        if pool_valid:
+                            autobi_desired_x = pool_x
+                            autobi_desired_y = pool_y
+                            autobi_captured = True
+                            print(f'[AUTOBI] pool centre captured: '
+                                  f'x={autobi_desired_x:.3f}, y={autobi_desired_y:.3f}')
+                        else:
+                            # No pool sample yet: hold current position rather than
+                            # driving to the origin. Retry capture next loop.
+                            autobi_desired_x = mocap_x_filt
+                            autobi_desired_y = mocap_y_filt
+                            if loop_flag % 100 == 50:
+                                print(f'[AUTOBI] waiting for pool body '
+                                      f'{pool_rigid_body_index} — holding position')
                 BI.update(autobi_desired_x, autobi_desired_y, desired_z,
                           R13_filt, R23_filt,
                           mocap_x_filt, mocap_y_filt, mocap_z_raw,
@@ -978,10 +1291,14 @@ if __name__ == '__main__':
                     print(f'[{control_mode}] thrust: {cmd_thrust}')
 
             elif control_mode == 'DROP':
-                # Water-hop drop: no attitude/height control. Command the lowest
-                # thrust so the MAV falls, while the rotors keep spinning at the
-                # idle floor (6000 per rotor) to preserve yaw rate through the
-                # drop. Stays armed so the motors don't stop.
+                # Water-hop drop: no attitude/height control. cmd_thrust drives
+                # the lift motors (m1/m3, and all 4 on the legacy mixer) down
+                # to DROP_THRUST so the MAV falls. On tangential-spin boards,
+                # the tangential motors (m2/m4) don't read cmd_thrust at all --
+                # they run at whatever powerDist.spinThrust currently is,
+                # which was switched to machine['drop_spin_thrust'] the instant
+                # DROP was entered (see the Triangle handler above). Stays
+                # armed so the motors don't stop.
                 cmd_thrust = DROP_THRUST
                 cmd_roll = 0.0
                 cmd_pitch = 0.0
@@ -989,7 +1306,7 @@ if __name__ == '__main__':
                 cmd_yaw = 0.0
 
                 if loop_flag % 100 == 50:
-                    print(f'[DROP] thrust: {cmd_thrust} (rotors idling ~6000/rotor)')
+                    print(f'[DROP] lift thrust: {cmd_thrust}')
 
         else:
             cmd_roll = 0.0
@@ -1010,6 +1327,7 @@ if __name__ == '__main__':
             warn = ' <-- LOW' if 0.0 < pm_vbat < 3.2 else ''
             print(f'[battery] vbat = {pm_vbat:.2f} V{warn}')
 
+        # ---- flight-data logging ----
         if saver is not None:
             saver.add_elements(
                 Abs_time, float(udp_time),
@@ -1029,6 +1347,11 @@ if __name__ == '__main__':
             )
 
         RTS.sleep()
+    # ===================== end of main control loop =====================
+
+    # -------------------------------------------------------------------
+    # 7f. Shutdown / cleanup
+    # -------------------------------------------------------------------
 
     # Stop the sender thread before issuing the final motor-stop command,
     # so it can't keep pushing revolving setpoints afterwards.
