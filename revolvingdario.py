@@ -120,8 +120,8 @@ MACHINES = [
     {
         'name': 'cf2',
         'radio_channel': 60,          # -> radio://0/<ch>/2M
-        'thrust_base': 35000,         # HEIGHT_THRUST_BASE (JBI/BI/FBI)
-        'manual_base_thrust': 35000,  # MANUAL_BASE_THRUST (manual mode)
+        'thrust_base': 31000,         # HEIGHT_THRUST_BASE (JBI/BI/FBI)
+        'manual_base_thrust': 31000,  # MANUAL_BASE_THRUST (manual mode)
         'yaw_offset_deg': 50 ,       # added to mocap yaw before send
         'fixed_yawrate_deg': -4800.0, # R_LMS_FIXED_YAWRATE_DEG (LMS estimator)
         'bi_r13_r23_kp': -25.5,        # BI controller r13_r23_kp
@@ -189,7 +189,7 @@ MACHINES = [
         # technology (brushless/DSHOT vs brushed/OneShot125), so its thrust-
         # per-height-error response has no reason to match cf2's -- treat
         # these as unverified and retune from scratch on the bench.
-        'height_z_kp': 24000.0,        # TODO: recalibrate from scratch
+        'height_z_kp': 30000.0,        # TODO: recalibrate from scratch
         'height_z_ki': 0.0,            # TODO: recalibrate from scratch
         'height_z_kd': 10000.0,        # TODO: recalibrate from scratch
         'height_z_int_limit': 1.0,     # TODO: recalibrate from scratch
@@ -227,19 +227,19 @@ MACHINES = [
         'name': 'bolt',
         'radio_channel': 70,           # custom channel for this board
         'radio_address': 'E7E7E7E7E7', # note: this is actually the Crazyflie DEFAULT address
-        'thrust_base': 18000,          # TODO: recalibrate from scratch
-        'manual_base_thrust': 18000,   # TODO: recalibrate from scratch
+        'thrust_base': 28000,          # TODO: recalibrate from scratch
+        'manual_base_thrust': 28000,   # TODO: recalibrate from scratch
         'yaw_offset_deg': 80,          # TODO: recalibrate on bench
-        'fixed_yawrate_deg': -8700.0,  # TODO: recalibrate
-        'bi_r13_r23_kp': -25.5,        # TODO: recalibrate
-        'bi_xy_kp': 0.2,              # TODO: recalibrate
-        'bi_xy_kd': 0.3,               # TODO: recalibrate
+        'fixed_yawrate_deg': -8600.0,  # TODO: recalibrate
+        'bi_r13_r23_kp': -32,        # TODO: recalibrate
+        'bi_xy_kp': 0.3,              # TODO: recalibrate
+        'bi_xy_kd': 0.6,               # TODO: recalibrate
         'mixer_type': 1,               # selects powerDistributionTangentialSpin in firmware
         'spin_thrust': 40000,          # TODO: bench-tune from scratch
         'drop_spin_thrust': 40000,     # TODO: tune separately from spin_thrust -- motors 2/4 thrust during DROP mode only
         'motor_thrust_ceiling': 65535, # per-motor max thrust, this board
         'idle_thrust': 6000,           # TODO: bench-tune
-        'height_z_kp': 20000.0,        # TODO: recalibrate from scratch
+        'height_z_kp': 18000.0,        # TODO: recalibrate from scratch
         'height_z_ki': 0.0,            # TODO: recalibrate from scratch
         'height_z_kd': 13000.0,        # TODO: recalibrate from scratch
         'height_z_int_limit': 1.0,     # TODO: recalibrate from scratch
@@ -487,23 +487,133 @@ if __name__ == '__main__':
     #     the flight value if the cycle ever comes back around to 'manual'.
     #     Only meaningful on tangential-spin boards (mixer_type 1); ignored
     #     otherwise.
-    DROP_THRUST = 8000
+    DROP_THRUST = 0
 
-    # Hop experiment cycle: manual -> JBI -> BI -> AUTOBI -> DROP -> manual.
-    #   Circle spins up (manual ramp),
-    #   Triangle #1 -> JBI    (fly up manually; desired_z reset to
-    #                          JBI_INITIAL_HEIGHT on entry),
-    #   Triangle #2 -> BI     (hold a fixed (x, y) setpoint, reset to
-    #                          BI_INITIAL_X/Y on entry; right-stick-Z as usual;
-    #                          left stick still nudges x/y from there),
-    #   Triangle #3 -> AUTOBI (auto-locate the pool centre in X/Y only -- Z is
-    #                          untouched, left wherever BI/manual left it, same
-    #                          as legacy behavior; left stick can still nudge
-    #                          x/y off the found centre, same mechanism as BI),
-    #   Triangle #4 -> DROP   (release into the water hop; spin motors switch
-    #                          to drop_spin_thrust, lift motors cut to DROP_THRUST).
-    # FBI is left OUT of the cycle; its controller code is kept but stale.
-    CONTROL_MODES = ('manual', 'JBI', 'BI', 'AUTOBI', 'DROP')
+    # DROP auto-hop-detect: once the vehicle has genuinely fallen (a real
+    # freefall descent, not just idling at DROP entry) and then rebounds off
+    # the water (vz turns positive again), automatically switch back to JBI
+    # instead of needing a perfectly-timed Triangle press. See the main loop
+    # for the arm/trigger logic. DROP_HOP_MAX_PLAUSIBLE_VZ/_Z reject mocap
+    # dropouts (seen in real logs: z snaps to a stale ~5 m sentinel and vz
+    # spikes as high as +80 m/s, then decays back through plausible-looking
+    # values over several samples -- both guards are needed since that decay
+    # tail alone can otherwise pass the vz check).
+    DROP_HOP_FALL_VZ = -0.25           # m/s -- must fall at least this fast to arm
+    DROP_HOP_RISE_VZ = 0.08           # m/s -- rising above this (once armed) triggers the switch
+    DROP_HOP_MAX_PLAUSIBLE_VZ = 3.0   # m/s -- above this, treat vz as a mocap dropout glitch
+    DROP_HOP_MAX_PLAUSIBLE_Z = 1.5    # m -- above this, treat z as a mocap dropout sentinel
+    DROP_HOP_FROZEN_SAMPLES = 15      # consecutive exact-repeat z samples (~150 ms @ 100 Hz) -- treat as a stale/frozen dropout
+
+    # DROP dropout-boost: mocap keeps dropping out at the exact moment of
+    # splashdown (z snaps to a sentinel / vz spikes), which means the
+    # auto-hop-detect above can be legitimately falling, armed, and then go
+    # BLIND right when the real rebound would have shown up -- so it never
+    # fires and the vehicle sits at DROP_THRUST indefinitely. If a dropout is
+    # seen while already armed (a real fall was confirmed first, so this
+    # isn't just a random mocap blip before anything happened), stop trying
+    # to read vz/z at all and blindly command extra thrust for a fixed
+    # window instead -- a bet that "dropout right at impact" usually means
+    # markers occluded by splash and still rebounding, not something worse.
+    # roll/pitch stay at 0 through this -- if z is untrustworthy the
+    # attitude quaternion almost certainly is too, so no attempt is made to
+    # steer, only to add lift. When the window ends, advance_control_mode()
+    # is called exactly as if a real rebound had been detected.
+    #
+    # Real data (2026-08-01): a 1.5 s boost at full amount overshot badly --
+    # mocap stayed frozen through the whole window (never confirmed a real
+    # rebound to cut it short), so by the time it reacquired the vehicle was
+    # already at ~1.6-1.9 m against a ~1.0-1.2 m target. Then handing off at
+    # full boost thrust straight into the next controller's first tick was a
+    # step the height PID couldn't absorb cleanly (thrust bounced between
+    # ~3000 and the 65535 ceiling, roll hit -20+ deg, for about a second
+    # before it settled). Two fixes: shorter window (less time to
+    # overshoot), and ramp the boost amount down to 0 over the tail of the
+    # window instead of cutting it off in one step, so whatever controller
+    # takes over inherits something closer to its own normal thrust_base
+    # rather than a sudden drop from (thrust_base + full boost).
+    DROP_HOP_DROPOUT_BOOST_AMOUNT = 3000     # added to HEIGHT_THRUST_BASE at full boost
+    DROP_HOP_DROPOUT_BOOST_DURATION = 1   # seconds -- total boost window
+    DROP_HOP_DROPOUT_BOOST_RAMPDOWN = 3   # seconds -- boost amount tapers to 0 over this final stretch
+
+    # Hop experiment cycle, in two phases:
+    #   Phase 1 (FIRST pass only): manual -> JBI -> BI -> AUTOBI -> DROP, in
+    #     that fixed order, once. Circle spins up (manual ramp); each
+    #     Triangle press (or the DROP auto-hop-detect) advances one step.
+    #   Phase 2 (every pass after the first): repeats forever through
+    #     REPEAT_MODES below, which you configure with the REPEAT_*_ENABLED
+    #     toggles just under it -- turn JBI/BI/AUTOBI on or off for the
+    #     repeat cycle independently of what Phase 1 used. DROP is always
+    #     included and always last in the repeat cycle.
+    # Either way, the DROP auto-hop-detect (see the main loop) and a manual
+    # Triangle press do the EXACT SAME THING -- the auto-detect just calls
+    # advance_control_mode(), i.e. it presses Triangle for you the instant it
+    # sees the rebound, instead of you having to time it. Entering a mode
+    # right after DROP always restores the normal flight spin_thrust
+    # (undoing DROP's drop_spin_thrust), regardless of which mode that is.
+    FIRST_PASS_MODES = ('manual', 'JBI', 'BI', 'AUTOBI', 'DROP')
+
+    # ---- Repeat-cycle configuration: turn modes on/off for every pass AFTER
+    # the first. DROP is always included; these three toggles are the only
+    # thing you need to touch. Order below is the repeat-cycle order. ----
+    REPEAT_JBI_ENABLED    = False
+    REPEAT_BI_ENABLED     = False
+    REPEAT_AUTOBI_ENABLED = True
+
+    REPEAT_MODES = tuple(
+        name for enabled, name in [
+            (REPEAT_JBI_ENABLED, 'JBI'),
+            (REPEAT_BI_ENABLED, 'BI'),
+            (REPEAT_AUTOBI_ENABLED, 'AUTOBI'),
+        ] if enabled
+    ) + ('DROP',)
+
+    def advance_control_mode():
+        """Advance control_mode one step and apply that mode's entry
+        side-effects. This is the ONE place mode-advance logic lives --
+        called by a real Triangle press AND by the DROP auto-hop-detect, so
+        the two can never drift apart (the auto-detect is literally just
+        calling this for you the instant it sees the rebound).
+        """
+        global control_mode, desired_z, desired_x, desired_y, first_pass_done
+        came_from_drop = (control_mode == 'DROP')
+
+        if not first_pass_done:
+            idx = FIRST_PASS_MODES.index(control_mode)
+            control_mode = FIRST_PASS_MODES[idx + 1]
+            if control_mode == 'DROP':
+                first_pass_done = True   # fixed first pass is used up
+        else:
+            idx = REPEAT_MODES.index(control_mode)
+            control_mode = REPEAT_MODES[(idx + 1) % len(REPEAT_MODES)]
+
+        print(f'control_mode -> {control_mode}')
+
+        if control_mode == 'JBI':
+            desired_z = JBI_INITIAL_HEIGHT
+            print(f'[JBI] desired_z reset to {JBI_INITIAL_HEIGHT:.2f} m')
+        elif control_mode == 'BI':
+            desired_x = BI_INITIAL_X
+            desired_y = BI_INITIAL_Y
+            print(f'[BI] desired_x/y reset to ({BI_INITIAL_X:.2f}, {BI_INITIAL_Y:.2f}) m')
+        elif control_mode == 'DROP':
+            drop_spin = machine.get('drop_spin_thrust')
+            if drop_spin is not None and machine.get('mixer_type', 0) == 1:
+                try:
+                    lc.cf.param.set_value('powerDist.spinThrust', str(drop_spin))
+                    print(f'[DROP] powerDist.spinThrust -> {drop_spin}')
+                except Exception as e:
+                    print(f'[WARN] failed to set DROP spinThrust: {e}')
+
+        # Whatever mode comes right after DROP, undo DROP's spinThrust
+        # switch -- not tied to a specific destination mode, so this stays
+        # correct no matter how REPEAT_MODES is configured.
+        if came_from_drop and control_mode != 'DROP' and machine.get('mixer_type', 0) == 1:
+            try:
+                lc.cf.param.set_value('powerDist.spinThrust', str(machine['spin_thrust']))
+                print(f"powerDist.spinThrust -> {machine['spin_thrust']} (restored)")
+            except Exception as e:
+                print(f'[WARN] failed to restore spinThrust: {e}')
+
     # Closed-loop (controller-driven) modes. AUTOBI reuses the BI controller
     # (XY position -> tilt, height PD for Z). FBI stays listed so its existing
     # code remains valid. DROP is open-loop (fixed low thrust), so it is NOT here.
@@ -513,14 +623,14 @@ if __name__ == '__main__':
     # state variables are declared, in the runtime-state section below --
     # see "AUTOBI pool-centre auto-locate state.")
 
-    # JBI: desired_z is reset to this the instant JBI is entered (Triangle
-    # #1), so every run starts each JBI stage from the same known altitude
-    # instead of whatever desired_z happened to be left at previously.
-    JBI_INITIAL_HEIGHT = 1
+    # JBI: desired_z is reset to this the instant JBI is entered, so every
+    # JBI stage starts from the same known altitude instead of whatever
+    # desired_z happened to be left at previously.
+    JBI_INITIAL_HEIGHT = 0.95
 
-    # BI: desired_x/desired_y are reset to this fixed (x, y) the instant BI is
-    # entered (Triangle #2) -- "a set coord" to hold before handing off to
-    # AUTOBI. Still nudgeable afterward via the left stick, same as always.
+    # BI: desired_x/desired_y are reset to this fixed (x, y) the instant BI
+    # is entered -- "a set coord" to hold. Still nudgeable afterward via the
+    # left stick, same as always.
     BI_INITIAL_X = 0.0
     BI_INITIAL_Y = 0.0
 
@@ -665,7 +775,10 @@ if __name__ == '__main__':
     # Log battery voltage so we can watch for voltage sag under the revolving
     # load (fast-spinning props draw a lot of current). One float at ~10 Hz
     # keeps the added radio traffic negligible.
-    logging_list = {'pm.vbat': 'float'}
+    # acc.z: raw onboard accelerometer, body-frame Z axis, in Gs -- logged to
+    # compare against mocap-derived vertical acceleration and check whether
+    # the ~8000 deg/s spin contaminates it (analyse.m plots both).
+    logging_list = {'pm.vbat': 'float', 'acc.z': 'float'}
     lc = LoggingCore(uri, 100, logging_list)
 
     # wait until Crazyflie connection is ready
@@ -737,7 +850,7 @@ if __name__ == '__main__':
             'R13_d', 'R23_d', 'R13_d_filt', 'R23_d_filt',
             'desired_x', 'desired_y', 'desired_z',
             'cmd_roll', 'cmd_pitch', 'yaw_deg', 'cmd_yaw', 'cmd_thrust',
-            'pm_vbat',
+            'pm_vbat', 'acc_z',
             'pool_x', 'pool_y', 'autobi_desired_x', 'autobi_desired_y',
         )
 
@@ -779,9 +892,11 @@ if __name__ == '__main__':
     manual_z_error_i = 0.0
     armed = False
 
-    # control_mode cycle with Triangle:
-    #   manual -> JBI -> BI -> AUTOBI -> DROP -> manual
+    # control_mode cycle with Triangle: first pass is the fixed
+    # FIRST_PASS_MODES sequence; every pass after that uses REPEAT_MODES
+    # (see the config section above and advance_control_mode()).
     control_mode = 'manual'
+    first_pass_done = False
 
     desired_x = 0.0
     desired_y = -0.3
@@ -801,6 +916,8 @@ if __name__ == '__main__':
     autobi_desired_x = 0.0  # captured pool-centre target held during AUTOBI
     autobi_desired_y = 0.0
     autobi_captured = False
+    drop_seen_freefall = False  # DROP auto-hop-detect arm flag (see main loop)
+    drop_dropout_boost_until = None  # DROP dropout-boost end time, or None if not boosting
 
     R13_filt = 0.0
     R23_filt = 0.0
@@ -821,6 +938,7 @@ if __name__ == '__main__':
     mocap_y_filt_prev = 0.0
     mocap_z_filt_prev = 0.0
     mocap_z_prev = 0.0
+    mocap_z_frozen_count = 0  # consecutive exact-repeat samples of mocap_z_raw (see main loop)
     mocap_filt_vel_initialized = False
     mocap_vx_filt = 0.0
     mocap_vy_filt = 0.0
@@ -906,52 +1024,16 @@ if __name__ == '__main__':
                 manual_z_error_i = 0.0
                 print('[manual] off stage: thrust = 0')
 
-        # ---- cycle control mode (Triangle): manual -> JBI -> BI -> AUTOBI -> DROP ----
+        # ---- cycle control mode (Triangle) ----
+        # All mode-advance logic (including each mode's entry side-effects)
+        # lives in advance_control_mode() -- see the config section above.
+        # The DROP auto-hop-detect below calls the exact same function, so a
+        # real Triangle press and the auto-detect can never behave
+        # differently. 'manual' is only ever the starting mode -- it's the
+        # first entry in FIRST_PASS_MODES and never appears in REPEAT_MODES,
+        # so advance_control_mode() can never route back into it.
         if RD_triangle.step(PJ.get_key('Triangle')):
-            control_mode = CONTROL_MODES[
-                (CONTROL_MODES.index(control_mode) + 1) % len(CONTROL_MODES)
-            ]
-            print(f'control_mode -> {control_mode}')
-
-            if control_mode == 'JBI':
-                desired_z = JBI_INITIAL_HEIGHT
-                print(f'[JBI] desired_z reset to {JBI_INITIAL_HEIGHT:.2f} m')
-            elif control_mode == 'BI':
-                desired_x = BI_INITIAL_X
-                desired_y = BI_INITIAL_Y
-                print(f'[BI] desired_x/y reset to ({BI_INITIAL_X:.2f}, {BI_INITIAL_Y:.2f}) m')
-            elif control_mode == 'DROP':
-                drop_spin = machine.get('drop_spin_thrust')
-                if drop_spin is not None and machine.get('mixer_type', 0) == 1:
-                    try:
-                        lc.cf.param.set_value('powerDist.spinThrust', str(drop_spin))
-                        print(f'[DROP] powerDist.spinThrust -> {drop_spin}')
-                    except Exception as e:
-                        print(f'[WARN] failed to set DROP spinThrust: {e}')
-
-            if controllerEnable and control_mode == 'manual':
-                manual_start_time = Abs_time
-                manual_stage = 'ramp'
-                manual_z_error_i = 0.0
-                print(
-                    f'[manual] ramp stage: {MANUAL_THRUST_MIN} -> {MANUAL_BASE_THRUST} '
-                    f'in {MANUAL_RAMP_TIME:.1f}s'
-                )
-                # Cycled all the way back around from DROP -- restore the
-                # normal flight spin thrust (only matters if it was ever
-                # switched away, i.e. the run went through DROP already).
-                if machine.get('mixer_type', 0) == 1:
-                    try:
-                        lc.cf.param.set_value('powerDist.spinThrust', str(machine['spin_thrust']))
-                        print(f"powerDist.spinThrust -> {machine['spin_thrust']} (restored)")
-                    except Exception as e:
-                        print(f'[WARN] failed to restore spinThrust: {e}')
-            else:
-                if manual_stage != 'off':
-                    print('[manual] off stage: thrust = 0')
-                manual_start_time = None
-                manual_stage = 'off'
-                manual_z_error_i = 0.0
+            advance_control_mode()
 
         # ---- emergency stop (Square) ----
         if PJ.get_key('Square'):
@@ -1064,6 +1146,22 @@ if __name__ == '__main__':
             dt=sample_time,
         )
 
+        # ---- mocap Z staleness detector (frozen dropout) ----
+        # A THIRD dropout signature, distinct from the sentinel-jump /
+        # velocity-spike ones DROP_HOP_MAX_PLAUSIBLE_VZ/_Z catch: mocap can
+        # also just STOP updating and hold the last valid reading frozen
+        # (e.g. RealTimeProcessor.step() keeps last-good values on an
+        # incomplete/missing packet). That makes vz settle toward 0, not
+        # spike -- looks exactly like "the vehicle stopped moving," not like
+        # garbage data, so it slips past the other two checks entirely.
+        # Counting exact repeats of mocap_z_raw catches it: real optical
+        # tracking always has some sub-mm jitter, so many EXACT repeats in a
+        # row is itself the signature of stale data, not genuine stillness.
+        if mocap_z_raw == mocap_z_prev:
+            mocap_z_frozen_count += 1
+        else:
+            mocap_z_frozen_count = 0
+
         # ---- online finite difference from filtered mocap position ----
         if not mocap_filt_vel_initialized:
             mocap_vx = 0.0
@@ -1130,9 +1228,9 @@ if __name__ == '__main__':
         # BI mode: integrate horizontal setpoint from the left stick over time.
         # Push LeftStick X/Y to walk desired_x/desired_y; release to hold.
         # Y is negated to match JBI's and manual mode's LeftStick/RightStick-Y
-        # convention (JBI.update() passes -JSL_y; manual's cmd_pitch uses
-        # -JSL_y) -- without this, BI's up/down feel is reversed relative to
-        # every other mode. X needs no negation; it already matches everywhere.
+        # convention -- without this, BI's up/down feel is reversed relative
+        # to every other mode. X needs no negation; it already matches
+        # everywhere.
         if controllerEnable and control_mode == 'BI':
             desired_x = saturation(
                 desired_x + JSL_x * DESIRED_XY_RATE * sample_time,
@@ -1144,12 +1242,11 @@ if __name__ == '__main__':
                 DESIRED_XY_LIMIT,
                 -DESIRED_XY_LIMIT,
             )
-        # AUTOBI: same left-stick nudge mechanism as BI (same rate, same
-        # limit, same BiController gains -- AUTOBI is just BI with an
-        # auto-located starting target), applied on top of the captured pool
-        # centre so you can trim off the auto-locate result. Gated on
-        # autobi_captured so there's nothing to nudge before the pool is found
-        # (see the AUTOBI dispatch below, which owns the capture itself).
+        # AUTOBI: same left-stick nudge mechanism BI uses (same rate, same
+        # limit, same BiController gains), applied on top of the captured
+        # pool centre so you can trim off the auto-locate result. Gated on
+        # autobi_captured so there's nothing to nudge before the pool is
+        # found (see the AUTOBI dispatch below, which owns the capture itself).
         elif controllerEnable and control_mode == 'AUTOBI' and autobi_captured:
             autobi_desired_x = saturation(
                 autobi_desired_x + JSL_x * DESIRED_XY_RATE * sample_time,
@@ -1212,6 +1309,54 @@ if __name__ == '__main__':
         # not in AUTOBI so it re-captures fresh on the next entry.
         if control_mode != 'AUTOBI':
             autobi_captured = False
+
+        # DROP auto-hop-detect: clear the "has fallen" arm flag and any
+        # in-progress dropout-boost whenever not in DROP, so both start
+        # fresh on the next hop.
+        if control_mode != 'DROP':
+            drop_seen_freefall = False
+            drop_dropout_boost_until = None
+
+        # DROP auto-hop-detect: arm on a real freefall descent, then the
+        # instant vz rebounds, call advance_control_mode() -- the exact same
+        # function a Triangle press calls. This IS "pressing Triangle for
+        # you": whichever mode comes next (first-pass JBI, or whatever
+        # REPEAT_MODES says) and all of that mode's entry side-effects
+        # (including restoring spinThrust) happen exactly as they would from
+        # a manual press. Runs BEFORE the active_controller dispatch below,
+        # so the new mode takes over this same tick instead of one loop late.
+        #
+        # If mocap drops out mid-fall (see DROP_HOP_DROPOUT_BOOST_* above),
+        # vz/z can't be trusted to ever show the rebound, so a timed blind
+        # thrust boost takes over instead of waiting for a trigger that may
+        # never come; command-output applies the actual boosted thrust below.
+        if control_mode == 'DROP':
+            if drop_dropout_boost_until is not None:
+                if Abs_time >= drop_dropout_boost_until:
+                    drop_dropout_boost_until = None
+                    drop_seen_freefall = False
+                    print('[DROP dropout-boost] boost window elapsed -- advancing mode')
+                    advance_control_mode()
+            else:
+                is_mocap_dropout = (
+                    mocap_z_raw > DROP_HOP_MAX_PLAUSIBLE_Z
+                    or abs(mocap_vz_filt) > DROP_HOP_MAX_PLAUSIBLE_VZ
+                    or mocap_z_frozen_count >= DROP_HOP_FROZEN_SAMPLES
+                )
+                if drop_seen_freefall and is_mocap_dropout:
+                    drop_dropout_boost_until = Abs_time + DROP_HOP_DROPOUT_BOOST_DURATION
+                    print(f'[DROP dropout-boost] mocap dropout mid-fall '
+                          f'(z={mocap_z_raw:.2f}, vz={mocap_vz_filt:.2f}) -- '
+                          f'boosting thrust for {DROP_HOP_DROPOUT_BOOST_DURATION:.1f}s')
+                else:
+                    if mocap_vz_filt < DROP_HOP_FALL_VZ:
+                        drop_seen_freefall = True
+                    if (drop_seen_freefall
+                            and DROP_HOP_RISE_VZ < mocap_vz_filt < DROP_HOP_MAX_PLAUSIBLE_VZ
+                            and mocap_z_raw < DROP_HOP_MAX_PLAUSIBLE_Z):
+                        drop_seen_freefall = False
+                        print(f'[DROP auto-hop-detect] rebound detected (vz={mocap_vz_filt:.2f} m/s)')
+                        advance_control_mode()
 
         active_controller = None
         if controllerEnable and control_mode in CLOSED_LOOP_MODES:
@@ -1299,14 +1444,37 @@ if __name__ == '__main__':
                 # which was switched to machine['drop_spin_thrust'] the instant
                 # DROP was entered (see the Triangle handler above). Stays
                 # armed so the motors don't stop.
-                cmd_thrust = DROP_THRUST
+                #
+                # Dropout-boost override: if mocap went blind mid-fall (see
+                # the auto-hop-detect block above), blindly command extra
+                # lift instead of DROP_THRUST for the boost window -- still
+                # no attitude control, just more thrust, since attitude
+                # can't be trusted right now either. The boost amount ramps
+                # down to 0 over the final DROP_HOP_DROPOUT_BOOST_RAMPDOWN
+                # seconds so the handoff to the next controller (whatever
+                # advance_control_mode() picks) lands near its own normal
+                # thrust_base instead of dropping from a much higher number
+                # in one step.
+                if drop_dropout_boost_until is not None:
+                    time_remaining = drop_dropout_boost_until - Abs_time
+                    if time_remaining < DROP_HOP_DROPOUT_BOOST_RAMPDOWN:
+                        boost_fraction = max(0.0, time_remaining / DROP_HOP_DROPOUT_BOOST_RAMPDOWN)
+                    else:
+                        boost_fraction = 1.0
+                    cmd_thrust = int(round(saturation(
+                        HEIGHT_THRUST_BASE + DROP_HOP_DROPOUT_BOOST_AMOUNT * boost_fraction,
+                        HEIGHT_THRUST_MAX, HEIGHT_THRUST_MIN,
+                    )))
+                else:
+                    cmd_thrust = DROP_THRUST
                 cmd_roll = 0.0
                 cmd_pitch = 0.0
                 yaw_deg = mocap_yaw_deg
                 cmd_yaw = 0.0
 
                 if loop_flag % 100 == 50:
-                    print(f'[DROP] lift thrust: {cmd_thrust}')
+                    tag = ' (dropout-boost)' if drop_dropout_boost_until is not None else ''
+                    print(f'[DROP] lift thrust: {cmd_thrust}{tag}')
 
         else:
             cmd_roll = 0.0
@@ -1323,6 +1491,10 @@ if __name__ == '__main__':
         # Latest logged battery voltage (held between ~10 Hz log updates).
         # Low-battery warning fires at 3.2 V on the CF2 firmware.
         pm_vbat = float(lc.get_logged_data().get('pm.vbat', 0.0))
+        # Raw onboard accelerometer, body-frame Z axis, in Gs (see acc.z in
+        # stabilizer.c) -- compared against mocap-derived vertical
+        # acceleration in analyse.m.
+        acc_z = float(lc.get_logged_data().get('acc.z', 0.0))
         if loop_flag % 100 == 50:
             warn = ' <-- LOW' if 0.0 < pm_vbat < 3.2 else ''
             print(f'[battery] vbat = {pm_vbat:.2f} V{warn}')
@@ -1341,7 +1513,7 @@ if __name__ == '__main__':
                 float(R13_d), float(R23_d), float(R13_d_filt), float(R23_d_filt),
                 float(desired_x), float(desired_y), float(desired_z),
                 float(cmd_roll), float(cmd_pitch), float(yaw_deg), float(cmd_yaw), int(cmd_thrust),
-                float(pm_vbat),
+                float(pm_vbat), float(acc_z),
                 float(pool_x), float(pool_y),
                 float(autobi_desired_x), float(autobi_desired_y),
             )

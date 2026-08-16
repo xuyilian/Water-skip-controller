@@ -17,6 +17,17 @@ clear; clc; close all;
 RUN_FIXED_RTIP_SCATTER_ONLY = true;   % true: only generate the fixed-rtip beta-zdot figure
 
 %% ===== Fixed parameters (held constant) =====
+% !! STALE vs THE AS-BUILT VEHICLE (flagged 2026-08-16) !!
+% These constants predate the final hardware and are NOT a spec sheet. As built:
+%   mass 90 g (not 40 g)      -- incl. mocap markers + glue
+%   chord 15 mm (not 10 mm)   -- foil is also 3 mm thick
+%   beta  30 deg              -- the ONLY angle ever fabricated and flown
+%   foil tip radius 145 mm    -- 75 mm motor-mount radius + 70 mm foil span
+%                                (nom.rtip below is the 70 mm SPAN, mislabelled)
+% Left unchanged on purpose: the figures currently in the thesis (Ch.2) were
+% generated from these values, so editing them here silently invalidates the
+% published plots. Decide deliberately -- re-run at as-built values and
+% regenerate the figures, or state the parameter gap in the text.
 N    = 4;            % number of hydrofoils
 cf   = 10e-3;        % hydrofoil physical chord [m]; caps the wetted length
 m    = 40e-3;        % vehicle mass [kg]
@@ -40,8 +51,10 @@ t_end = 0.3;         % max simulation time [s]
 t     = 0:dt:t_end;
 
 %% ===== Nominal values of the three engineering variables =====
-nom.rtip  = 0.070;            % m (70 mm, as-built foil tip radius)
-nom.beta  = deg2rad(10);      % rad (10 deg)
+nom.rtip  = 0.070;            % m (70 mm) -- this is the foil SPAN, not the
+                              % as-built tip radius from the spin axis (145 mm).
+                              % See the stale-parameter note above.
+nom.beta  = deg2rad(10);      % rad (10 deg) -- as-built foils are 30 deg
 nom.zdot0 = -1.5;             % m/s (downward)
 
 %% ===== Sweep ranges for each variable =====

@@ -89,6 +89,39 @@ else
     fprintf('Battery plot skipped: this log has no pm_vbat field.\n');
 end
 
+%% ---------- Onboard vs mocap vertical acceleration ----------
+% Checks whether the vehicle's ~8000 deg/s spin contaminates the onboard
+% accelerometer's Z axis. Physics: pure centripetal acceleration from
+% rotation about Z only loads the accelerometer's X/Y axes, not Z -- in the
+% ideal case Z should read true vertical dynamics regardless of spin rate.
+% Real hardware (prop/hydrofoil imbalance, any wobble/precession) can leak
+% some of that into Z as an oscillation at the spin frequency. mocap_z is
+% physically incapable of being affected by spin the same way (it's an
+% external optical measurement), so it's the reference to compare against.
+if ~exist('t','var'); analyse_prep; end
+if exist('acc_z','var')
+    g = 9.81;
+    % Double-differentiate filtered mocap Z to get a KINEMATIC vertical
+    % acceleration (m/s^2), then convert to the accelerometer's own
+    % convention -- SPECIFIC FORCE, reading +1 g at rest, not 0 -- so the
+    % two traces sit on the same axis and are directly comparable.
+    accel_smooth_window = max(3, round(0.1 * Fs));
+    vz_from_filt = movmean(gradient(mocap_z_filt, t), accel_smooth_window);
+    az_mocap_ms2 = movmean(gradient(vz_from_filt, t), accel_smooth_window);
+    az_mocap_g   = az_mocap_ms2 / g + 1.0;
+
+    figure('Name','Onboard vs mocap vertical acceleration','NumberTitle','off');
+    plot(t, acc_z, 'LineWidth', 1.2); hold on;
+    plot(t, az_mocap_g, 'LineWidth', 1.6);
+    yline(1.0, ':', '1 g (at rest)', 'HandleVisibility','off');
+    grid on; xlabel('Time [s]'); ylabel('Vertical acceleration [g]');
+    title('Onboard accelerometer (acc.z) vs mocap-derived vertical acceleration');
+    legend('acc.z (onboard, raw)', 'z acceleration (from mocap, double-differentiated)', ...
+        'Location','best');
+else
+    fprintf('Onboard-vs-mocap acceleration plot skipped: this log has no acc_z field.\n');
+end
+
 %% ---------- Attitude angles (mocap) ----------
 if ~exist('t','var'); analyse_prep; end
 figure('Name','Mocap attitude (roll/pitch/yaw)','NumberTitle','off');
@@ -115,14 +148,22 @@ mocap_yawrate_deg_smooth = movmean(mocap_yawrate_deg, yawrate_smooth_window);
 
 figure('Name','Mocap yaw and yaw rate','NumberTitle','off');
 
+% Distinct colors (not line style) for the right-axis traces: at high
+% oscillation frequency, dashed/dotted styles visually crush together and
+% become unreadable, but solid lines in different colors stay distinguishable.
+color_yaw          = [0.00 0.45 0.74];  % blue
+color_yawrate_raw  = [0.65 0.65 0.65];  % gray  -- noisiest, recedes visually
+color_yawrate_filt = [0.85 0.10 0.10];  % red
+color_yawrate_smooth = [0.00 0.60 0.20]; % green
+
 yyaxis left;
-plot(t, mocap_yaw_deg, 'LineWidth', 1.4);
+plot(t, mocap_yaw_deg, '-', 'Color', color_yaw, 'LineWidth', 1.4);
 ylabel('Yaw [deg]');
 
 yyaxis right;
-plot(t, mocap_yawrate_deg, 'LineWidth', 1.0); hold on;
-plot(t, mocap_yawrate_deg_filt,   'LineWidth', 1.6);
-plot(t, mocap_yawrate_deg_smooth, 'LineWidth', 2.0);
+plot(t, mocap_yawrate_deg, '-', 'Color', color_yawrate_raw, 'LineWidth', 1.0); hold on;
+plot(t, mocap_yawrate_deg_filt,   '-', 'Color', color_yawrate_filt,   'LineWidth', 1.6);
+plot(t, mocap_yawrate_deg_smooth, '-', 'Color', color_yawrate_smooth, 'LineWidth', 1.8);
 ylabel('Yaw rate [deg/s]');
 
 grid on; xlabel('Time [s]');
@@ -221,167 +262,198 @@ title('Mocap 2D trajectory');
 legend('trajectory','start','end');
 
 %% ==========================================================
-%  Segment analysis around the water-skip event
-%  Segment = first sample where the filtered yaw rate drops below a
-%  threshold, extended by a fixed duration. Raw/filtered signals and their
-%  1st/2nd derivatives are plotted for X, Y, R13 and R23.
+%  Segment analysis around water-skip hop events (multiple hops per log)
+%  Hop = detected directly from the mocap PHYSICS (a real fall then a
+%  rebound in vertical velocity), using the same fall/rise thresholds as
+%  the live DROP auto-hop-detect in revolvingdario.py. Deliberately NOT
+%  keyed off DROP mode's command signature: in practice hops get tested
+%  both via DROP mode AND by simply disabling the controller (Circle) and
+%  letting the vehicle fall, and only the physics-based detection catches
+%  both. The whole log is scanned, so every hop in a multi-hop log gets its
+%  own set of plots, each tagged "(hop k/N)".
+%
+%  IMPORTANT: mocap tracking commonly drops out right at splashdown (markers
+%  submerged / occluded by splash) -- e.g. mocap_z_raw can snap to a stale
+%  value while mocap_vz_filt spikes to an unphysical speed. Every plot below
+%  shades that dropout window (gray patch) instead of silently plotting it
+%  as real data. Battery voltage is the one signal here that is NOT
+%  mocap-derived, so it stays trustworthy straight through the dropout --
+%  it's the best available cross-check for "was it actually in the water"
+%  when mocap itself is worthless.
 %  ==========================================================
 if ~exist('t','var'); analyse_prep; end
 t_all = Abs_time(:);
 
-% Segment definition.
-yawrate_threshold        = -2800;   % deg/s
-duration_after_threshold = 3;       % seconds
+% ---- Hop detection knobs (same physics/values as DROP_HOP_* in
+% revolvingdario.py's live auto-hop-detect) ----
+hop_fall_vz          = -0.3;   % m/s -- must fall at least this fast to arm
+hop_rise_vz          = 0.15;   % m/s -- rising above this (once armed) is a hop
+hop_max_plausible_vz = 3.0;    % m/s -- above this, treat vz as a mocap dropout glitch
+hop_max_plausible_z  = 1.5;    % m -- above this, treat z as a mocap dropout sentinel
+lead_in              = 1.0;    % seconds shown before each hop onset
+max_duration         = 4.0;    % seconds shown after each hop onset (or end of log)
+vz_dropout_threshold = 5.0;    % m/s -- |vz| above this flags a mocap-dropout sample
 
-idx_start = find(mocap_yawrate_deg_filt(:) < yawrate_threshold, 1, 'first');
-if isempty(idx_start)
-    % No water-skip event in this log (e.g. short / aborted run). Skip the
-    % segment plots but leave all earlier figures intact.
-    warning(['Segment analysis skipped: filtered yaw rate never drops below ' ...
-        '%.0f deg/s in this log.'], yawrate_threshold);
+% ---- Scan the whole log for hop onsets: arm on a real fall, trigger on
+% the rebound, then only re-arm after falling again (so one long fall can't
+% register as multiple hops). ----
+vz_all = mocap_vz_filt(:);
+z_all  = mocap_z_raw(:);
+armed  = false;
+hop_onsets = [];
+for k = 1:numel(t_all)
+    if vz_all(k) < hop_fall_vz
+        armed = true;
+    end
+    if armed && vz_all(k) > hop_rise_vz && vz_all(k) < hop_max_plausible_vz ...
+            && z_all(k) < hop_max_plausible_z
+        hop_onsets(end+1) = k; %#ok<AGROW>
+        armed = false;
+    end
+end
+
+if isempty(hop_onsets)
+    warning('Segment analysis skipped: no water-skip hop detected in this log.');
     return
 end
 
-seg_t_start = t_all(idx_start);
-seg_t_end   = seg_t_start + duration_after_threshold;
-idx_seg     = (t_all >= seg_t_start) & (t_all <= seg_t_end);
+fprintf('Segment analysis: found %d hop(s) in this log, at t = %s s\n', ...
+    numel(hop_onsets), mat2str(round(t_all(hop_onsets).', 2)));
 
-if nnz(idx_seg) < 5
-    warning(['Segment analysis skipped: only %d sample(s) in the %.1f s window ' ...
-        '(event too close to the end of the log).'], nnz(idx_seg), duration_after_threshold);
-    return
+for h = 1:numel(hop_onsets)
+    idx_hop = hop_onsets(h);
+
+    seg_t_start = max(t_all(1),   t_all(idx_hop) - lead_in);
+    seg_t_end   = min(t_all(end), t_all(idx_hop) + max_duration);
+    idx_seg     = (t_all >= seg_t_start) & (t_all <= seg_t_end);
+
+    if nnz(idx_seg) < 5
+        warning('Hop %d/%d skipped: only %d sample(s) in the segment window.', ...
+            h, numel(hop_onsets), nnz(idx_seg));
+        continue
+    end
+
+    % Segment time, reset to start at 0 at the hop onset.
+    ts = t_all(idx_seg) - t_all(idx_hop);
+    fprintf('  Hop %d/%d: onset at t = %.3f s, window %.3f s to %.3f s\n', ...
+        h, numel(hop_onsets), t_all(idx_hop), ts(1), ts(end));
+
+    % Cut signals (force column vectors, matching ts).
+    z_raw       = mocap_z_raw(idx_seg).';
+    z_filt      = mocap_z_filt(idx_seg).';
+    vz_seg      = mocap_vz_filt(idx_seg).';
+    x_raw       = mocap_x_raw(idx_seg).';
+    y_raw       = mocap_y_raw(idx_seg).';
+    r13_seg     = R13_filt(idx_seg).';
+    r23_seg     = R23_filt(idx_seg).';
+    yawrate_seg = mocap_yawrate_deg_filt(idx_seg).';
+    vbat_seg    = pm_vbat(idx_seg).';
+
+    % Dropout mask: samples where mocap is not to be trusted. Two distinct
+    % signatures, since a dropout doesn't always look the same:
+    %   1) huge spurious vertical speed (sentinel-jump dropout)
+    %   2) z_raw exactly repeating for several samples in a row (frozen
+    %      dropout -- e.g. RealTimeProcessor keeps last-good values on a
+    %      missing packet). Real optical tracking always has sub-mm jitter,
+    %      so an exact repeat run is itself a stale-data signature. This one
+    %      is NOT caught by the vz check -- a frozen value settles vz toward
+    %      0, not a spike. Matches DROP_HOP_FROZEN_SAMPLES in revolvingdario.py.
+    frozen_run_length = 15;  % consecutive exact-repeat samples (~150 ms @ 100 Hz)
+    is_repeat = [false; diff(z_raw(:)) == 0];
+    frozen = movsum(is_repeat, [frozen_run_length - 1, 0]) >= frozen_run_length;
+
+    dropout = (abs(vz_seg) > vz_dropout_threshold) | frozen;
+    if any(dropout)
+        fprintf('  Hop %d/%d: %d/%d samples flagged as mocap dropout (|vz| > %.1f m/s, or frozen z)\n', ...
+            h, numel(hop_onsets), nnz(dropout), numel(dropout), vz_dropout_threshold);
+    end
+
+    plot_hop_segment(h, numel(hop_onsets), ts, z_raw, z_filt, vz_seg, ...
+        x_raw, y_raw, r13_seg, r23_seg, yawrate_seg, vbat_seg, dropout);
 end
 
-% Segment time, reset to start at 0.
-ts = t_all(idx_seg) - seg_t_start;
-fprintf('Segment: %.3f s to %.3f s, duration %.3f s\n', ...
-    seg_t_start, seg_t_end, ts(end));
 
-% Cut signals (force column vectors).
-x_raw  = mocap_x_raw(idx_seg).';
-x_filt = mocap_x_filt(idx_seg).';
-y_raw  = mocap_y_raw(idx_seg).';
-y_filt = mocap_y_filt(idx_seg).';
+% ======================================================================
+%  Local helper functions (valid at the end of a MATLAB script, R2016b+)
+% ======================================================================
+function plot_hop_segment(hop_num, n_hops, ts, z_raw, z_filt, vz_seg, ...
+        x_raw, y_raw, r13_seg, r23_seg, yawrate_seg, vbat_seg, dropout)
+% Produces the standard 5-figure water-skip segment view for ONE detected
+% hop, tagged "(hop hop_num/n_hops)" so multiple hops in one log don't get
+% confused with each other. t = 0 is the hop onset in every plot.
+tag = sprintf(' (hop %d/%d)', hop_num, n_hops);
 
-r13_raw  = R13(idx_seg).';
-r13_filt = R13_filt(idx_seg).';
-r23_raw  = R23(idx_seg).';
-r23_filt = R23_filt(idx_seg).';
+figure('Name', ['Segment: altitude' tag], 'NumberTitle','off');
+plot(ts, z_raw, 'LineWidth', 1.0); hold on;
+plot(ts, z_filt, 'LineWidth', 1.6);
+xline(0, '--', 'hop', 'LineWidth', 1.2);
+grid on; xlabel('Time from hop onset [s]'); ylabel('Altitude [m]');
+title(['Segment: altitude through the water-skip event' tag]);
+legend('z (raw)','z (filtered)', 'Location','best');
+shade_dropout(gca, ts, dropout);
 
-vx_filt_seg = mocap_vx_filt(idx_seg).';
-vy_filt_seg = mocap_vy_filt(idx_seg).';
+figure('Name', ['Segment: vertical velocity' tag], 'NumberTitle','off');
+plot(ts, vz_seg, 'LineWidth', 1.6); hold on;
+yline(0, ':');
+xline(0, '--', 'hop', 'LineWidth', 1.2);
+grid on; xlabel('Time from hop onset [s]'); ylabel('v_z (filtered) [m/s]');
+title(['Segment: vertical velocity -- impact speed vs. rebound speed' tag]);
+shade_dropout(gca, ts, dropout);
 
-r13_d_filt_seg = R13_d_filt(idx_seg).';
-r23_d_filt_seg = R23_d_filt(idx_seg).';
+figure('Name', ['Segment: battery voltage' tag], 'NumberTitle','off');
+plot(ts, vbat_seg, 'LineWidth', 1.6); hold on;
+xline(0, '--', 'hop', 'LineWidth', 1.2);
+grid on; xlabel('Time from hop onset [s]'); ylabel('V_{bat} [V]');
+title(['Segment: battery voltage (onboard telemetry -- unaffected by mocap dropout)' tag]);
+shade_dropout(gca, ts, dropout);
 
-yawrate_filt_seg = mocap_yawrate_deg_filt(idx_seg).';
+figure('Name', ['Segment: yaw rate' tag], 'NumberTitle','off');
+plot(ts, yawrate_seg, 'LineWidth', 1.6); hold on;
+xline(0, '--', 'hop', 'LineWidth', 1.2);
+grid on; xlabel('Time from hop onset [s]'); ylabel('Yaw rate (filtered) [deg/s]');
+title(['Segment: spin rate through submersion' tag]);
+shade_dropout(gca, ts, dropout);
 
-% Smoothing window for derivatives computed here.
-deriv_smooth_window = 11;
-
-% First derivatives.
-x_filt_d = movmean(gradient(x_filt, ts), deriv_smooth_window);
-y_filt_d = movmean(gradient(y_filt, ts), deriv_smooth_window);
-
-% Second derivatives.
-x_filt_dd        = gradient(x_filt_d, ts);
-x_filt_dd_smooth = movmean(x_filt_dd, deriv_smooth_window);
-y_filt_dd        = gradient(y_filt_d, ts);
-y_filt_dd_smooth = movmean(y_filt_dd, deriv_smooth_window);
-
-r13_d_filt_smooth = movmean(r13_d_filt_seg, deriv_smooth_window);
-r23_d_filt_smooth = movmean(r23_d_filt_seg, deriv_smooth_window);
-r13_dd_smooth     = movmean(gradient(r13_d_filt_smooth, ts), deriv_smooth_window);
-r23_dd_smooth     = movmean(gradient(r23_d_filt_smooth, ts), deriv_smooth_window);
-
-% ---------- Segment yaw rate ----------
-figure('Name','Segment: yaw rate','NumberTitle','off');
-plot(ts, yawrate_filt_seg, 'LineWidth', 1.5); grid on;
-xlabel('Time after threshold [s]'); ylabel('Yaw rate (filtered) [deg/s]');
-title(sprintf('Segment: %.2f s to %.2f s', seg_t_start, seg_t_end));
-
-% ---------- Segment X ----------
-figure('Name','Segment: X and derivatives','NumberTitle','off');
-tiledlayout(3,1);
+figure('Name', ['Segment: horizontal drift and tilt' tag], 'NumberTitle','off');
+tiledlayout(2,1);
 
 nexttile;
-plot(ts, x_raw,  'LineWidth', 1.0); hold on;
-plot(ts, x_filt, 'LineWidth', 1.6);
-grid on; ylabel('X [m]'); title('Mocap X');
-legend('x (raw)','x (filtered)');
+plot(ts, x_raw, 'LineWidth', 1.4); hold on;
+plot(ts, y_raw, 'LineWidth', 1.4);
+xline(0, '--', 'hop', 'LineWidth', 1.2);
+grid on; ylabel('Position [m]');
+legend('x (raw)','y (raw)', 'Location','best');
+title(['Segment: horizontal drift' tag]);
+shade_dropout(gca, ts, dropout);
 
 nexttile;
-plot(ts, x_filt_d,    'LineWidth', 1.6); hold on;
-plot(ts, vx_filt_seg, 'LineWidth', 1.2);
-grid on; ylabel('dX/dt [m/s]');
-legend('x rate (from filtered X)','vx (logged filter)');
+plot(ts, r13_seg, 'LineWidth', 1.4); hold on;
+plot(ts, r23_seg, 'LineWidth', 1.4);
+xline(0, '--', 'hop', 'LineWidth', 1.2);
+grid on; ylabel('Tilt'); xlabel('Time from hop onset [s]');
+legend('R13 (filtered)','R23 (filtered)', 'Location','best');
+title(['Segment: attitude tilt' tag]);
+shade_dropout(gca, ts, dropout);
+end
 
-nexttile;
-plot(ts, x_filt_dd,        'LineWidth', 1.0); hold on;
-plot(ts, x_filt_dd_smooth, 'LineWidth', 1.8);
-grid on; ylabel('d^2X/dt^2 [m/s^2]'); xlabel('Time after threshold [s]');
-legend('x accel','x accel (smoothed)');
-
-% ---------- Segment Y ----------
-figure('Name','Segment: Y and derivatives','NumberTitle','off');
-tiledlayout(3,1);
-
-nexttile;
-plot(ts, y_raw,  'LineWidth', 1.0); hold on;
-plot(ts, y_filt, 'LineWidth', 1.6);
-grid on; ylabel('Y [m]'); title('Mocap Y');
-legend('y (raw)','y (filtered)');
-
-nexttile;
-plot(ts, y_filt_d,    'LineWidth', 1.6); hold on;
-plot(ts, vy_filt_seg, 'LineWidth', 1.2);
-grid on; ylabel('dY/dt [m/s]');
-legend('y rate (from filtered Y)','vy (logged filter)');
-
-nexttile;
-plot(ts, y_filt_dd,        'LineWidth', 1.0); hold on;
-plot(ts, y_filt_dd_smooth, 'LineWidth', 1.8);
-grid on; ylabel('d^2Y/dt^2 [m/s^2]'); xlabel('Time after threshold [s]');
-legend('y accel','y accel (smoothed)');
-
-% ---------- Segment R13 ----------
-figure('Name','Segment: R13 and derivatives','NumberTitle','off');
-tiledlayout(3,1);
-
-nexttile;
-plot(ts, r13_raw,  'LineWidth', 1.0); hold on;
-plot(ts, r13_filt, 'LineWidth', 1.6);
-grid on; ylabel('R13'); title('R13');
-legend('R13 (raw)','R13 (filtered)');
-
-nexttile;
-plot(ts, r13_d_filt_seg,    'LineWidth', 1.0); hold on;
-plot(ts, r13_d_filt_smooth, 'LineWidth', 1.6);
-grid on; ylabel('dR13/dt');
-legend('R13 rate (logged filter)','R13 rate (smoothed)');
-
-nexttile;
-plot(ts, r13_dd_smooth, 'LineWidth', 1.6);
-grid on; ylabel('d^2R13/dt^2'); xlabel('Time after threshold [s]');
-legend('R13 accel (smoothed)');
-
-% ---------- Segment R23 ----------
-figure('Name','Segment: R23 and derivatives','NumberTitle','off');
-tiledlayout(3,1);
-
-nexttile;
-plot(ts, r23_raw,  'LineWidth', 1.0); hold on;
-plot(ts, r23_filt, 'LineWidth', 1.6);
-grid on; ylabel('R23'); title('R23');
-legend('R23 (raw)','R23 (filtered)');
-
-nexttile;
-plot(ts, r23_d_filt_seg,    'LineWidth', 1.0); hold on;
-plot(ts, r23_d_filt_smooth, 'LineWidth', 1.6);
-grid on; ylabel('dR23/dt');
-legend('R23 rate (logged filter)','R23 rate (smoothed)');
-
-nexttile;
-plot(ts, r23_dd_smooth, 'LineWidth', 1.6);
-grid on; ylabel('d^2R23/dt^2'); xlabel('Time after threshold [s]');
-legend('R23 accel (smoothed)');
+function shade_dropout(ax, ts, dropout)
+% Shades contiguous TRUE runs of `dropout` (aligned with ts) as translucent
+% gray patches behind the plotted data, flagging stretches where mocap
+% tracking was lost (e.g. markers submerged/occluded at splashdown) so they
+% are never mistaken for real position/velocity data. No-op if nothing is
+% flagged. Patches are excluded from the legend (HandleVisibility off).
+if ~any(dropout)
+    return
+end
+yl = ylim(ax);
+starts = find(diff([false; dropout(:); false]) == 1);
+ends   = find(diff([false; dropout(:); false]) == -1) - 1;
+for k = 1:numel(starts)
+    xs = ts([starts(k), ends(k)]);
+    p = patch(ax, [xs(1) xs(2) xs(2) xs(1)], [yl(1) yl(1) yl(2) yl(2)], ...
+        [0.5 0.5 0.5], 'FaceAlpha', 0.25, 'EdgeColor', 'none', ...
+        'HandleVisibility', 'off');
+    uistack(p, 'bottom');
+end
+ylim(ax, yl);
+end
