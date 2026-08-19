@@ -5,8 +5,9 @@ clear; clc; close all;
 %  Predicts the spin (omega) and vertical velocity (zdot) of the vehicle
 %  through one water contact (entry -> submerged -> exit), and sweeps the
 %  three engineering variables we can change:
-%       1) rtip    (hydrofoil tip radius; the foil extends from the axis of
-%                   rotation, so its radial span equals rtip)
+%       1) rtip    (hydrofoil tip radius, measured from the SPIN AXIS. The
+%                   foil does not reach the axis: it runs from the motor
+%                   mount at rinner out to rtip, so its span is rtip-rinner)
 %       2) beta    (hydrofoil angle of attack / inclination)
 %       3) zdot0   (vertical speed into the water at contact)
 %  The submerged chord grows with penetration depth, c_sub = z/sin(beta),
@@ -17,31 +18,57 @@ clear; clc; close all;
 RUN_FIXED_RTIP_SCATTER_ONLY = true;   % true: only generate the fixed-rtip beta-zdot figure
 
 %% ===== Fixed parameters (held constant) =====
-% !! STALE vs THE AS-BUILT VEHICLE (flagged 2026-08-16) !!
-% These constants predate the final hardware and are NOT a spec sheet. As built:
-%   mass 90 g (not 40 g)      -- incl. mocap markers + glue
-%   chord 15 mm (not 10 mm)   -- foil is also 3 mm thick
-%   beta  30 deg              -- the ONLY angle ever fabricated and flown
-%   foil tip radius 145 mm    -- 75 mm motor-mount radius + 70 mm foil span
-%                                (nom.rtip below is the 70 mm SPAN, mislabelled)
-% Left unchanged on purpose: the figures currently in the thesis (Ch.2) were
-% generated from these values, so editing them here silently invalidates the
-% published plots. Decide deliberately -- re-run at as-built values and
-% regenerate the figures, or state the parameter gap in the text.
+% AS-BUILT VEHICLE (updated 2026-08-17). Every value here describes the
+% vehicle that actually flew the hops reported in Ch.5.
 N    = 4;            % number of hydrofoils
-cf   = 10e-3;        % hydrofoil physical chord [m]; caps the wetted length
-m    = 40e-3;        % vehicle mass [kg]
+cf   = 15e-3;        % hydrofoil physical chord [m]; caps the wetted length
+m    = 90e-3;        % vehicle mass [kg], all-up incl. mocap markers
 rho  = 1000;         % water density [kg/m^3]
 g    = 9.81;         % gravitational acceleration [m/s^2]
 
+% ---- HYDROFOIL RADIAL GEOMETRY (the two radius knobs) -------------------
+% The foil does NOT reach the axis of rotation. Each leg drops from its motor
+% mount at rinner and kinks outward into the foil, which runs from there to
+% rtip. Both radii are measured from the SPIN AXIS, and the blade-element
+% integral is taken over rinner -> rtip (see compute_thrust_and_torque):
+%
+%        axis .......... rinner ============ rtip
+%        (no foil here)         ^ wetted span ^
+%
+% As built: rinner = 75 mm (150 mm core diameter), rtip = 145 mm, so the
+% foil span is 70 mm. Vary either independently; rtip must exceed rinner.
+rinner = 75e-3;      % foil ROOT radius [m] -- where the foil starts
+% rtip is set per case; its nominal value is nom.rtip below.
+
 % Moment of inertia about the spin axis: uniform 2-D disk of the vehicle mass
-%   I = m * R_disk^2.  R_disk is a fixed vehicle property (it does NOT track
-%   the swept foil tip radius).  Change R_disk to update easily.
-R_disk = 7e-2;       % disk radius [m]
+%   I = m * R_disk^2.
+% R_disk is taken as the full tip radius, 145 mm: the legs and foils reach
+% that far and carry real mass, so the vehicle's inertia is set by its whole
+% span rather than by the motor-mount circle alone.
+% TODO: still a PLACEHOLDER -- the MoI has never been measured. omega_exit
+% depends on it directly, so measure it before quoting a predicted spin loss.
+R_disk = 145e-3;     % disk radius [m] = foil tip radius
 I      = m * R_disk^2;
 
-% Spin: entry value and the controller minimum (both given in deg/s)
-omega0    = deg2rad(3500);   % entry spin at contact [rad/s] (3500 deg/s)
+% Spin: entry value and the controller minimum (both given in deg/s).
+% Read from the logged mocap yaw rate. NOTE the signal oscillates strongly
+% at the spin frequency -- in hover the raw rate swings ~7900-12000 deg/s
+% and the 9-point filtered rate ~7500-9200 -- so these are read off the
+% traces, not sampled at a point. (Rates are genuine, not aliased: the raw
+% yaw steps ~88 deg/sample at 95 Hz against a 17,000 deg/s limit.)
+%
+%     hover, lift rotors ON    ~8800 deg/s
+%     freefall, rotors OFF     ~8000 deg/s   <- omega0
+%     after the water contact  ~3200 deg/s   <- ~40% retained; a validation
+%                                               target for the omega_exit
+%                                               this model predicts
+%
+% The ~800 deg/s drop between hover and freefall is consistent in both the
+% raw and filtered traces and across both hops of the stable-2-hop case. It
+% is the lift rotors' reaction-torque contribution to yaw disappearing when
+% they are commanded off, leaving the tangential rotors driving the spin
+% alone. Use the freefall value: the foils never meet the water in hover.
+omega0    = deg2rad(8000);   % spin at water contact [rad/s] (8000 deg/s)
 omega_min = deg2rad(1000);   % controller minimum spin [rad/s] (1000 deg/s)
 
 %% ===== Integration settings =====
@@ -51,19 +78,28 @@ t_end = 0.3;         % max simulation time [s]
 t     = 0:dt:t_end;
 
 %% ===== Nominal values of the three engineering variables =====
-nom.rtip  = 0.070;            % m (70 mm) -- this is the foil SPAN, not the
-                              % as-built tip radius from the spin axis (145 mm).
-                              % See the stale-parameter note above.
-nom.beta  = deg2rad(10);      % rad (10 deg) -- as-built foils are 30 deg
-nom.zdot0 = -1.5;             % m/s (downward)
+% The as-built operating point: foil tip 145 mm from the spin axis
+% (= rinner 75 mm + 70 mm span), beta 30 deg (the only angle fabricated and
+% flown), entry speed the measured -1.55 to -1.87 m/s.
+nom.rinner = rinner;          % m (75 mm) -- foil root, sweepable like the rest
+nom.rtip  = 0.145;            % m (145 mm from the spin axis)
+nom.beta  = deg2rad(30);      % rad (30 deg, as built)
+nom.zdot0 = -1.7;             % m/s (downward), mid-range of the measured entries
 
 %% ===== Sweep ranges for each variable =====
-rtip_list  = [0.020 0.030 0.050 0.070];        % m
-beta_list  = deg2rad([5 10 15 20 25 30]);      % rad
-zdot0_list = [-1.0 -1.5 -2.0 -3.0];            % m/s
+% rtip is swept about the as-built 145 mm by varying the foil SPAN from
+% 20 to 120 mm beyond the fixed 75 mm root; beta spans the design study,
+% with 30 deg the value actually built.
+rtip_list   = rinner + [0.020 0.045 0.070 0.095 0.120];   % m -> 95..195 mm
+beta_list   = deg2rad([5 10 15 20 25 30]);                % rad
+zdot0_list  = [-1.0 -1.5 -1.7 -2.0 -3.0];                 % m/s
+% Root radius swept with the TIP held at its nominal 145 mm, so this varies
+% the span from the inside: a larger rinner means a shorter foil sitting
+% further out, where it sweeps faster.
+rinner_list = [0.025 0.050 0.075 0.100 0.125];            % m, must stay < rtip
 
 %% ===== Pack constants into a struct for the helpers =====
-params = struct('N',N,'cf',cf,'m',m,'I',I,'rho',rho,'g',g, ...
+params = struct('N',N,'cf',cf,'m',m,'I',I,'rho',rho,'g',g,'rinner',rinner, ...
                 'omega0',omega0,'omega_min',omega_min,'z0',z0,'t',t,'dt',dt);
 
 %% ===== Fast path: fixed-rtip beta-zdot plane colored by exit speed =====
@@ -73,33 +109,41 @@ if RUN_FIXED_RTIP_SCATTER_ONLY
 end
 
 %% ===== Report nominal-case result =====
-[~,~,~,we_nom,ze_nom,te_nom] = run_case(nom.rtip,nom.beta,nom.zdot0,params);
+[~,~,~,we_nom,ze_nom,te_nom] = run_case(nom.rtip,nom.beta,nom.zdot0,params,nom.rinner);
 fprintf('\nNominal case (r_tip=%.0f mm, beta=%.0f deg, zdot0=%.1f m/s):\n', ...
     nom.rtip*1e3, rad2deg(nom.beta), nom.zdot0);
 fprintf('  omega_exit = %.0f deg/s (min %.0f),  zdot_exit = %.3f m/s,  t_contact = %.2f ms\n', ...
     rad2deg(we_nom), rad2deg(omega_min), ze_nom, te_nom*1e3);
 
 %% ===== Specific entry-to-exit case requested for reporting =====
-plot_entry_exit_case(0.040, deg2rad(30), -3.0, params);
+% rtip is measured from the SPIN AXIS and must exceed rinner, so this is the
+% as-built 145 mm, not the old 40 mm (which predated the annular geometry
+% and now fails the rtip > rinner check).
+plot_entry_exit_case(nom.rtip, nom.beta, nom.zdot0, params);
 
 %% ===== Three one-at-a-time sweeps (time-series of omega and zdot) =====
-sweep_and_plot('rtip',  rtip_list,  rtip_list*1e3,     'r_{tip} = %.0f mm', nom, params);
-sweep_and_plot('beta',  beta_list,  rad2deg(beta_list),'\\beta = %.0f deg',nom, params);
-sweep_and_plot('zdot0', zdot0_list, zdot0_list,        'z'' = %.1f m/s',   nom, params);
+sweep_and_plot('rtip',   rtip_list,   rtip_list*1e3,     'r_{tip} = %.0f mm',  nom, params);
+sweep_and_plot('rinner', rinner_list, rinner_list*1e3,   'r_{in} = %.0f mm',   nom, params);
+sweep_and_plot('beta',   beta_list,   rad2deg(beta_list),'\\beta = %.0f deg',  nom, params);
+sweep_and_plot('zdot0',  zdot0_list,  zdot0_list,        'z'' = %.1f m/s',     nom, params);
 
 %% ===== Optimization: grids for the 2-D heatmaps and the 3-D search =====
+% rtip is swept from rinner+20 mm to rinner+120 mm, i.e. 95-195 mm from the
+% spin axis, bracketing the as-built 145 mm.
+rtip_lo = rinner + 0.020;   rtip_hi = rinner + 0.120;
+
 % Smooth grids for the 2-D heatmaps (any two variables -> xy-plane)
-gs.rtip  = linspace(0.020, 0.070, 45);
+gs.rtip  = linspace(rtip_lo, rtip_hi, 45);
 gs.beta  = deg2rad(linspace(5, 50, 45));
 gs.zdot0 = linspace(-0.5, -5.0, 45);
 
 % Coarser grid for the exhaustive 3-D optimum search
-g3.rtip  = linspace(0.020, 0.070, 10);
+g3.rtip  = linspace(rtip_lo, rtip_hi, 10);
 g3.beta  = deg2rad(linspace(5, 50, 10));
 g3.zdot0 = linspace(-0.5, -5.0, 10);
 
 % Grid for iso-color surfaces in the full 3-D design space
-giso.rtip  = linspace(0.020, 0.070, 18);
+giso.rtip  = linspace(rtip_lo, rtip_hi, 18);
 giso.beta  = deg2rad(linspace(5, 50, 18));
 giso.zdot0 = linspace(-0.5, -5.0, 18);
 
@@ -124,15 +168,20 @@ optimize_hop(g3, params);
 % =========================================================================
 
 %% Run one case and return time series + exit values
-function [time, omega_t, zdot_t, omega_exit, zdot_exit, t_exit] = run_case(rtip, beta, zdot0, p)
+function [time, omega_t, zdot_t, omega_exit, zdot_exit, t_exit] = run_case(rtip, beta, zdot0, p, rinner)
+    % rinner is optional: omit it to use the vehicle default in p.rinner,
+    % or pass a value to sweep the foil root radius like any other variable.
+    if nargin < 5 || isempty(rinner)
+        rinner = p.rinner;
+    end
     [time, ~, zdot_t, omega_t, ~, zdot_exit, omega_exit, t_exit] = simulate_water_skipping( ...
-        rtip, beta, p.N, p.cf, p.m, p.I, p.rho, p.g, p.omega0, p.z0, zdot0, p.t, p.dt);
+        rinner, rtip, beta, p.N, p.cf, p.m, p.I, p.rho, p.g, p.omega0, p.z0, zdot0, p.t, p.dt);
 end
 
 %% Fixed-rtip beta-zdot plane with trajectories colored by exit speed
 function plot_fixed_rtip_exit_speed_scatter(rtip_fixed, params)
-    beta_min = 25;   beta_max = 65;  % deg
-    zin_min  = -5.0; zin_max  = -1.0; % m/s
+    beta_min = 10;   beta_max = 45;  % deg -- brackets the as-built 30 deg
+    zin_min  = -3.0; zin_max  = -1.0; % m/s -- brackets the measured entries
     n_beta = 3;
     n_zin = 3;
 
@@ -143,8 +192,12 @@ function plot_fixed_rtip_exit_speed_scatter(rtip_fixed, params)
     n_cases = numel(beta_deg);
 
     if isempty(rtip_fixed) || isnan(rtip_fixed)
-        candidate_rtips = linspace(0.020, 0.070, 11);
-        rtip_fixed = select_balanced_fixed_rtip(candidate_rtips, beta_deg, zdot_in, params);
+        % Default to the as-built tip radius. (select_balanced_fixed_rtip
+        % below used to pick a value giving an even split of ejected and
+        % failed contacts; at as-built conditions every case ejects, so
+        % there is no balance to find and the as-built geometry is the
+        % honest choice for a figure describing this vehicle.)
+        rtip_fixed = params.rinner + 0.070;      % 145 mm from the spin axis
     end
 
     data = struct('valid',{}, 'exit',{}, 'beta_deg',{}, 'zdot_in',{}, ...
@@ -207,80 +260,87 @@ function plot_fixed_rtip_exit_speed_scatter(rtip_fixed, params)
         x_end_fail = max(x_end_fail, max(data(k).t_ms));
     end
 
-    fig = figure('Name','Fixed-rtip beta-zdot plane trajectories', ...
-        'Color','w', 'Units','centimeters', 'Position',[2 2 24.0 7.0], ...
-        'PaperUnits','centimeters', 'PaperSize',[24.0 7.0], ...
-        'PaperPosition',[0 0 24.0 7.0], 'PaperPositionMode','manual');
+    % Single panel: at as-built conditions every case in this plane ejects,
+    % so there is no failed-contact set to separate out. All trajectories are
+    % drawn together -- solid for vertical velocity (left axis), dashed for
+    % spin (right axis) -- with a filled marker at water exit and a cross if
+    % a case ever fails to exit.
+    all_idx = find(valid_flags);
+    x_end_all = 0;
+    for k = all_idx(:).'
+        x_end_all = max(x_end_all, max(data(k).t_ms));
+    end
 
-    ax_exit = axes(fig, 'Position',[0.055 0.17 0.255 0.75]);
-    hold(ax_exit,'on'); grid(ax_exit,'on');
-    format_journal_axis(ax_exit);
-    yyaxis(ax_exit,'left');
-    for k = success_idx(:).'
-        clr = case_colors(k,:);
-        plot(ax_exit, data(k).t_ms, data(k).zdot, '-', ...
-            'Color',clr, 'LineWidth',1.15);
-        plot(ax_exit, data(k).t_ms(end), data(k).zdot(end), 'o', ...
-            'Color',clr, 'MarkerFaceColor',clr, 'MarkerSize',4.0);
-    end
-    yline(ax_exit, 0, ':', 'Color',[0.45 0.45 0.45], 'LineWidth',0.75);
-    ylabel(ax_exit, 'z''(t) [m s^{-1}]');
-    yyaxis(ax_exit,'right');
-    for k = success_idx(:).'
-        clr = case_colors(k,:);
-        plot(ax_exit, data(k).t_ms, data(k).omega_deg, '--', ...
-            'Color',clr, 'LineWidth',1.00);
-        plot(ax_exit, data(k).t_ms(end), data(k).omega_deg(end), 'o', ...
-            'Color',clr, 'MarkerFaceColor',clr, 'MarkerSize',4.0);
-    end
-    yline(ax_exit, rad2deg(params.omega_min), '--', ...
-        'Color',[0.45 0.45 0.45], 'LineWidth',0.75);
-    ylabel(ax_exit, '\omega(t) [deg s^{-1}]');
-    xlabel(ax_exit, 'time from water entry, t [ms]');
-    xlim(ax_exit, [0 max(x_end_success * 1.08, x_end_success + 0.5)]);
-    ax_exit.YAxis(1).Color = [0.18 0.18 0.18];
-    ax_exit.YAxis(2).Color = [0.18 0.18 0.18];
+    % Figure is sized to the plot alone: the trajectories carry a legend
+    % inside the axes rather than a separate label panel beside them, so
+    % there is no empty margin to crop.
+    fig = figure('Name','fixed_rtip_beta_zdot_trajectories', ...
+        'Color','w', 'Units','centimeters', 'Position',[2 2 11.5 8.0], ...
+        'PaperUnits','centimeters', 'PaperSize',[11.5 8.0], ...
+        'PaperPosition',[0 0 11.5 8.0], 'PaperPositionMode','manual');
 
-    ax_fail = axes(fig, 'Position',[0.435 0.17 0.255 0.75]);
-    hold(ax_fail,'on'); grid(ax_fail,'on');
-    format_journal_axis(ax_fail);
-    yyaxis(ax_fail,'left');
-    for k = fail_idx(:).'
-        clr = case_colors(k,:);
-        plot(ax_fail, data(k).t_ms, data(k).zdot, '-', ...
-            'Color',clr, 'LineWidth',1.15);
-        plot(ax_fail, data(k).t_ms(end), data(k).zdot(end), 'x', ...
-            'Color',clr, 'MarkerSize',5.5, 'LineWidth',1.0);
-    end
-    yline(ax_fail, 0, ':', 'Color',[0.45 0.45 0.45], 'LineWidth',0.75);
-    ylabel(ax_fail, 'z''(t) [m s^{-1}]');
-    yyaxis(ax_fail,'right');
-    for k = fail_idx(:).'
-        clr = case_colors(k,:);
-        plot(ax_fail, data(k).t_ms, data(k).omega_deg, '--', ...
-            'Color',clr, 'LineWidth',1.00);
-        plot(ax_fail, data(k).t_ms(end), data(k).omega_deg(end), 'x', ...
-            'Color',clr, 'MarkerSize',5.5, 'LineWidth',1.0);
-    end
-    yline(ax_fail, rad2deg(params.omega_min), '--', ...
-        'Color',[0.45 0.45 0.45], 'LineWidth',0.75);
-    ylabel(ax_fail, '\omega(t) [deg s^{-1}]');
-    xlabel(ax_fail, 'time from water entry, t [ms]');
-    xlim(ax_fail, [0 max(x_end_fail * 1.05, x_end_fail + 0.5)]);
-    ax_fail.YAxis(1).Color = [0.18 0.18 0.18];
-    ax_fail.YAxis(2).Color = [0.18 0.18 0.18];
+    ax = axes(fig, 'Position',[0.105 0.135 0.775 0.845]);
+    hold(ax,'on'); grid(ax,'on');
+    format_journal_axis(ax);
 
-    add_parameter_label_panel(fig, data, case_colors, valid_flags);
+    h_leg = gobjects(0);   % one handle per case, for the legend
+    leg   = {};
+
+    yyaxis(ax,'left');
+    for k = all_idx(:).'
+        clr = case_colors(k,:);
+        hl = plot(ax, data(k).t_ms, data(k).zdot, '-', 'Color',clr, 'LineWidth',1.15);
+        h_leg(end+1) = hl; %#ok<AGROW>
+        leg{end+1} = sprintf('\beta=%.0f^\circ, z''_{in}=%.0f', ...
+            data(k).beta_deg, data(k).zdot_in); %#ok<AGROW>
+        if data(k).exit
+            plot(ax, data(k).t_ms(end), data(k).zdot(end), 'o', 'Color',clr, ...
+                'MarkerFaceColor',clr, 'MarkerSize',4.0, 'HandleVisibility','off');
+        else
+            plot(ax, data(k).t_ms(end), data(k).zdot(end), 'x', 'Color',clr, ...
+                'MarkerSize',5.5, 'LineWidth',1.0, 'HandleVisibility','off');
+        end
+    end
+    yline(ax, 0, ':', 'Color',[0.45 0.45 0.45], 'LineWidth',0.75, ...
+        'HandleVisibility','off');
+    ylabel(ax, 'z''(t) [m s^{-1}]');
+
+    yyaxis(ax,'right');
+    for k = all_idx(:).'
+        clr = case_colors(k,:);
+        plot(ax, data(k).t_ms, data(k).omega_deg, '--', 'Color',clr, ...
+            'LineWidth',1.00, 'HandleVisibility','off');
+        if data(k).exit
+            plot(ax, data(k).t_ms(end), data(k).omega_deg(end), 'o', 'Color',clr, ...
+                'MarkerFaceColor',clr, 'MarkerSize',4.0, 'HandleVisibility','off');
+        else
+            plot(ax, data(k).t_ms(end), data(k).omega_deg(end), 'x', 'Color',clr, ...
+                'MarkerSize',5.5, 'LineWidth',1.0, 'HandleVisibility','off');
+        end
+    end
+    yline(ax, rad2deg(params.omega_min), '--', 'Color',[0.45 0.45 0.45], ...
+        'LineWidth',0.75, 'HandleVisibility','off');
+    ylabel(ax, '\omega(t) [deg s^{-1}]');
+
+    xlabel(ax, 'time from water entry, t [ms]');
+    xlim(ax, [0 max(x_end_all * 1.08, x_end_all + 0.5)]);
+    ax.YAxis(1).Color = [0.18 0.18 0.18];
+    ax.YAxis(2).Color = [0.18 0.18 0.18];
+
+    yyaxis(ax,'left');
+    lg = legend(ax, h_leg, leg, 'Location','southeast', 'NumColumns',3, ...
+        'FontName','Arial', 'FontSize',6.2, 'Box','off');
+    lg.ItemTokenSize = [10 4];
+
 
     drawnow;
-    add_top_border(fig, ax_exit);
-    add_top_border(fig, ax_fail);
+    add_top_border(fig, ax);
 
     out_dir = 'matlab_figures_fixed_span_plane';
     if ~exist(out_dir, 'dir')
         mkdir(out_dir);
     end
-    out_name = sprintf('fixed_span%.0f_split_exit_noexit_velocity_omega', rtip_fixed*1e3);
+    out_name = sprintf('fixed_span%.0f_velocity_omega', rtip_fixed*1e3);
     exportgraphics(fig, fullfile(out_dir, [out_name '.png']), 'Resolution', 300);
     savefig(fig, fullfile(out_dir, [out_name '.fig']));
     fprintf('  saved figure     = %s\n', fullfile(out_dir, [out_name '.png']));
@@ -345,35 +405,42 @@ function add_top_border(fig, ax)
 end
 
 function add_parameter_label_panel(fig, data, case_colors, valid_flags)
-    ax_label = axes(fig, 'Position',[0.785 0.17 0.205 0.75]);
+    % Sits to the right of the single trajectory panel. The x limits are set
+    % to 1 so that the swatch and text positions below are read directly as
+    % fractions of the panel width -- with a wider range the labels bunch
+    % into the left edge and leave the panel looking empty.
+    ax_label = axes(fig, 'Position',[0.655 0.17 0.335 0.75]);
     hold(ax_label,'on');
     axis(ax_label, 'off');
-    xlim(ax_label, [0 1.70]);
+    xlim(ax_label, [0 1]);
     ylim(ax_label, [0 1]);
 
     idx = find(valid_flags);
-    y_pos = linspace(0.92, 0.08, numel(idx));
+    y_pos = linspace(0.94, 0.06, numel(idx));
     for ii = 1:numel(idx)
         k = idx(ii);
         clr = case_colors(k,:);
-        plot(ax_label, [0.02 0.24], [y_pos(ii) y_pos(ii)], '-', ...
-            'Color',clr, 'LineWidth',2.2);
-        label = sprintf('\\beta=%.0f^\\circ, z''_{in}=%.0f m/s', ...
+        plot(ax_label, [0.02 0.16], [y_pos(ii) y_pos(ii)], '-', ...
+            'Color',clr, 'LineWidth',2.4);
+        label = sprintf('\\beta = %.0f^\\circ,  z''_{in} = %.0f m s^{-1}', ...
             data(k).beta_deg, data(k).zdot_in);
-        text(ax_label, 0.30, y_pos(ii), label, 'Interpreter','tex', ...
-            'FontName','Arial', 'FontSize',6.4, 'Color',[0.18 0.18 0.18], ...
+        text(ax_label, 0.21, y_pos(ii), label, 'Interpreter','tex', ...
+            'FontName','Arial', 'FontSize',8.0, 'Color',[0.18 0.18 0.18], ...
             'HorizontalAlignment','left', 'VerticalAlignment','middle');
     end
 end
 
 %% Plot requested entry-to-exit case with comparison cases, including failures
 function plot_entry_exit_case(rtip, beta, zdot0, params)
+    % Comparison cases around the as-built point. rtip values are measured
+    % from the spin axis, so they read rinner + span.
+    ri = params.rinner;
     cases = struct( ...
-        'rtip',  {rtip, 0.065, 0.030, 0.030, 0.020}, ...
-        'beta',  {beta, deg2rad(10), deg2rad(30), deg2rad(50), deg2rad(50)}, ...
-        'zdot0', {zdot0, -1.5, -2.5, -5.0, -5.0}, ...
-        'label', {'S1 40/30/-3', 'S2 65/10/-1.5', 'S3 30/30/-2.5', ...
-                  'F1 30/50/-5', 'F2 20/50/-5'});
+        'rtip',  {rtip, ri+0.070, ri+0.070, ri+0.045, ri+0.020}, ...
+        'beta',  {beta, deg2rad(15), deg2rad(45), deg2rad(45), deg2rad(45)}, ...
+        'zdot0', {zdot0, -1.5, -2.5, -3.0, -3.0}, ...
+        'label', {'S1 as-built', 'S2 145/15/-1.5', 'S3 145/45/-2.5', ...
+                  'F1 120/45/-3', 'F2 95/45/-3'});
 
     gray = [0.42 0.42 0.42];
     black = [0.18 0.18 0.18];
@@ -400,7 +467,14 @@ function plot_entry_exit_case(rtip, beta, zdot0, params)
 
         data(i).valid = numel(omega_t) == numel(time);
         if ~data(i).valid
-            fprintf('  %-15s : invalid geometry\n', cases(i).label);
+            % Keep the slot populated so later indexing (e.g. data(1)) does
+            % not fail when the leading case is the one that is invalid.
+            data(i).exit = false;
+            data(i).t_ms = [];  data(i).omega_deg = [];  data(i).zdot = [];
+            data(i).omega_exit = NaN;  data(i).zdot_exit = NaN;
+            data(i).t_exit = NaN;
+            fprintf('  %-15s : invalid geometry (needs rtip > rinner = %.0f mm)\n', ...
+                cases(i).label, params.rinner*1e3);
             continue;
         end
 
@@ -425,7 +499,12 @@ function plot_entry_exit_case(rtip, beta, zdot0, params)
         end
     end
 
-    fig = figure('Name','Entry-to-exit case: rtip40 beta30 zdot-3', ...
+    if ~any([data.valid])
+        warning('plot_entry_exit_case: no valid cases to plot.');
+        return;
+    end
+
+    fig = figure('Name','entry_to_exit_cases', ...
         'Color','w', 'Units','centimeters', 'Position',[2 2 18.0 8.0], ...
         'PaperUnits','centimeters', 'PaperSize',[18.0 8.0], ...
         'PaperPosition',[0 0 18.0 8.0], 'PaperPositionMode','manual');
@@ -578,8 +657,13 @@ function [exit_omega_deg, exit_zdot] = sweep_and_plot(field, vals, dispvals, fmt
     for i = 1:n
         cse = nom;
         cse.(field) = vals(i);
+        if cse.rtip <= cse.rinner
+            fprintf('  %-14s : skipped, r_tip (%.0f mm) <= r_in (%.0f mm)\n', ...
+                sprintf(fmt, dispvals(i)), cse.rtip*1e3, cse.rinner*1e3);
+            continue;
+        end
         [time, omega_t, zdot_t, omega_exit, zdot_exit, t_exit] = ...
-            run_case(cse.rtip, cse.beta, cse.zdot0, params);
+            run_case(cse.rtip, cse.beta, cse.zdot0, params, cse.rinner);
 
         % Skip only truly invalid runs (e.g. bad geometry -> length mismatch)
         if numel(omega_t) ~= numel(time)
@@ -648,7 +732,7 @@ function heatmap_pair(fieldX, fieldY, gridv, nom, params)
             cse = nom;
             cse.(fieldX) = vx(c);
             cse.(fieldY) = vy(r);
-            [~,~,~, we, ze, ~] = run_case(cse.rtip, cse.beta, cse.zdot0, params);
+            [~,~,~, we, ze, ~] = run_case(cse.rtip, cse.beta, cse.zdot0, params, cse.rinner);
             if ~isnan(we)
                 Zhop(r,c)  = ze;
                 Zspin(r,c) = rad2deg(we);
@@ -874,7 +958,7 @@ end
 %% Simulate one water contact (entry -> submerged -> exit)
 function [time, z_history, zdot_history, omega_history, ...
     z_exit, zdot_exit, omega_exit, t_exit] = simulate_water_skipping( ...
-    rtip, beta, N, cf, m, I, rho, g, omega0, z0, zdot0, t, dt)
+    rinner, rtip, beta, N, cf, m, I, rho, g, omega0, z0, zdot0, t, dt)
 
     z = z0;  zdot = zdot0;  omega = omega0;
 
@@ -895,7 +979,7 @@ function [time, z_history, zdot_history, omega_history, ...
         end
 
         % Hydrodynamic vertical thrust and resisting torque
-        [T, Q] = compute_thrust_and_torque(rtip, beta, N, cf, rho, omega, z, zdot);
+        [T, Q] = compute_thrust_and_torque(rinner, rtip, beta, N, cf, rho, omega, z, zdot);
 
         if isnan(T) || isnan(Q)
             time = t(1:k);
@@ -952,7 +1036,7 @@ function [time, z_history, zdot_history, omega_history, ...
 end
 
 %% Total vertical thrust and resisting torque from N hydrofoils
-function [T_total, Q_total] = compute_thrust_and_torque(rtip, beta, N, cf, rho, omega, z, zdot)
+function [T_total, Q_total] = compute_thrust_and_torque(rinner, rtip, beta, N, cf, rho, omega, z, zdot)
     % z >= 0 : foil above water, no force
     if z >= 0
         T_total = 0;  Q_total = 0;  return;
@@ -960,7 +1044,7 @@ function [T_total, Q_total] = compute_thrust_and_torque(rtip, beta, N, cf, rho, 
 
     h = -z;                     % penetration depth
 
-    if rtip <= 0
+    if rtip <= rinner || rinner < 0
         T_total = NaN;  Q_total = NaN;  return;     % invalid geometry
     end
 
@@ -972,9 +1056,14 @@ function [T_total, Q_total] = compute_thrust_and_torque(rtip, beta, N, cf, rho, 
         T_total = 0;  Q_total = 0;  return;
     end
 
-    % Blade-element integration from the axis of rotation to the tip
+    % Blade-element integration over the WETTED SPAN ONLY.
+    % The foil does not reach the axis of rotation: it begins at the motor
+    % mount radius rinner and extends to rtip, so the integral runs
+    % rinner -> rtip. Integrating from 0 would add a stretch of foil that
+    % does not exist, and because the element force scales as (omega*r)^2
+    % the error is not a small one.
     nr = 60;
-    r  = linspace(0, rtip, nr);
+    r  = linspace(rinner, rtip, nr);
 
     vx    = omega .* r;                 % tangential velocity
     v     = sqrt(vx.^2 + zdot.^2);      % resultant velocity
