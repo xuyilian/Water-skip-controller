@@ -146,14 +146,11 @@ function fig_single_hop(t, z, vz, thrust, t_lo, t_hi, pad_before, pad_after, ...
     end
 
     % ---- water contact --------------------------------------------------
-    % Contact is bounded by the two critical points of the velocity trace:
-    % the minimum, where the descent stops steepening and the foils begin
-    % to do work, and the maximum, where the water can no longer add upward
-    % speed and the vehicle reverts to ballistic flight. Between them the
-    % slope dv/dt is positive -- the vehicle is being pushed up.
-    %
-    % Neither boundary is the zero crossing: the descent is arrested well
-    % before the vehicle stops gaining upward speed.
+    % Contact runs from the onset of the steep rise in vertical velocity to
+    % the point where that rise stops. Neither boundary is the zero crossing:
+    % the descent is arrested well before the vehicle stops gaining upward
+    % speed, so the crossing falls in the middle of the contact, not at
+    % either end.
     %
     % The hop is located by the peak upward acceleration, searched ONLY
     % among unpowered samples -- re-engaging the lift rotors produces a
@@ -168,14 +165,24 @@ function fig_single_hop(t, z, vz, thrust, t_lo, t_hi, pad_before, pad_after, ...
     az_masked = az;  az_masked(~unpowered) = -inf;
     [az_pk, i_pk] = max(az_masked);
 
-    % small tolerance so measurement noise does not halt the walk early
-    tol = 0.02 * (max(vzs) - min(vzs));
-
-    i_entry = i_pk;                              % back to the velocity minimum
-    while i_entry > 1 && vzs(i_entry-1) <= vzs(i_entry) + tol
+    % ENTRY: the knee of the rise, not the velocity minimum. Before the foils
+    % bite, the velocity often plateaus for tens of milliseconds -- the vehicle
+    % has stopped accelerating downward but is not yet being pushed up, and the
+    % acceleration there is nothing but noise about zero. Taking the velocity
+    % minimum as entry would place the contact tens of milliseconds early. The
+    % boundary is instead where the acceleration first climbs to a set fraction
+    % of its peak, i.e. where the steep positive slope of v_z actually begins.
+    ENTRY_FRAC = 0.15;                           % of the peak acceleration
+    i_entry = i_pk;
+    while i_entry > 1 && az(i_entry-1) > ENTRY_FRAC*az_pk
         i_entry = i_entry - 1;
     end
-    i_exit = i_pk;                               % on to the velocity maximum
+
+    % EXIT: the velocity maximum. The water stops adding upward speed here, and
+    % beyond it the vehicle is ballistic again, so the turning point is the
+    % physical end of the contact.
+    tol = 0.02 * (max(vzs) - min(vzs));          % noise tolerance for the walk
+    i_exit = i_pk;
     while i_exit < numel(vzs) && vzs(i_exit+1) >= vzs(i_exit) - tol
         i_exit = i_exit + 1;
     end
@@ -236,7 +243,7 @@ function fig_single_hop(t, z, vz, thrust, t_lo, t_hi, pad_before, pad_after, ...
     % \includegraphics cannot take a filename containing a comma.
     fig = figure('Name','ch5fig1_single_hop', ...
         'Color','w', 'Units','centimeters', ...
-        'Position',[2 2 s.fig_width 9.6]);
+        'Position',[2 2 s.fig_width 10.4]);
     tl = tiledlayout(fig, 3, 1, 'TileSpacing','tight', 'Padding','compact');
 
     % ---- A: altitude ---------------------------------------------------
@@ -380,7 +387,7 @@ function s = fig_style()
     s.c_command   = [0.22 0.22 0.22];   % commanded thrust
     s.c_water     = [0.20 0.45 0.68];   % water / contact accent
 
-    s.fig_width   = 8.8;    % cm, single column
+    s.fig_width   = 15.0;   % cm, full text width of the thesis page
 
     % IMPORTANT: use MATLAB's 'tex' interpreter, never 'latex'. The 'latex'
     % interpreter ignores FontName and renders in Computer Modern, which is
