@@ -1,0 +1,45 @@
+# Flight environment as flown on the old Windows machine (conda env "cf",
+# Python 3.12.13), captured 2026-08-31 during the machine migration.
+#
+# cflib is PINNED: tools/cflib_revolving_patch.py is verified against 0.1.32,
+# and an upgrade silently removes send_setpoint_revolving -> flight breaks.
+# After installing, run:  python tools/cflib_revolving_patch.py
+#
+# Windows-only wheels are commented out; pip resolves mac equivalents itself.
+
+cflib==0.1.32
+cfclient==2026.4
+
+numpy==2.4.6
+scipy==1.17.1
+matplotlib==3.11.0
+PyYAML==6.0.3
+pyserial==3.5
+pyusb==1.3.1
+pyzmq==27.1.0
+tqdm==4.68.1
+
+# GUI / input stack (cfclient)
+PyQt6==6.7.1
+pyqtgraph==0.14.0
+pygame==2.6.1
+PySDL2==0.9.17
+vispy==0.16.2
+PyOpenGL==3.1.10
+
+# --- pulled in transitively; listed for exact reproduction if ever needed ---
+# appdirs==1.4.4  build==1.5.0  chardet==7.4.3  colorama==0.4.6
+# contourpy==1.3.3  cycler==0.12.1  fonttools==4.63.0  freetype-py==2.5.1
+# hsluv==5.0.4  importlib_resources==7.1.0  kiwisolver==1.5.0
+# packaging==25.0  pillow==12.2.0  pkg_about==2.4.3  py-utlx==2.4.0
+# pyparsing==3.3.2  pyproject_hooks==1.2.0  python-dateutil==2.9.0.post0
+# six==1.17.0  typing_extensions==4.15.0
+#
+# Windows-specific, do NOT install on macOS:
+# libusb==1.0.29.post7  pysdl2-dll==2.24.0
+# PyQt6-Qt6==6.7.3  PyQt6_sip==13.11.1
+#
+# NOTE: libusb-package IS cross-platform and is REQUIRED for radio access --
+# it bundles the native libusb that pyusb/cflib need to see the Crazyradio.
+# cfclient pulls it in automatically; if you ever install cflib alone, add it:
+#   pip install libusb-package
