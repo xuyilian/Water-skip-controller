@@ -27,7 +27,7 @@
 % =========================================================================
 
 % ------------------------------ WHAT TO BUILD ----------------------------
-FIG = 1;
+FIG = 3;
 
 % ------------------------------ TIME WINDOW ------------------------------
 %  Seconds of Abs_time, the LOG's own clock. This is NOT the plot's x-axis,
@@ -626,18 +626,56 @@ function yl = padded_limits(v, frac)
 end
 
 function save_figure(fig, out_dir, name)
-    if isempty(out_dir); return; end
-    here = fileparts(mfilename('fullpath'));
-    dest = out_dir;
-    if ~isfolder(dest); dest = fullfile(here, out_dir); end
-    if ~isfolder(dest)
-        warning('figs_results: %s does not exist; figure not saved.', dest);
+%  Resolves the destination to an absolute path and says exactly what it
+%  did. Silence here was previously indistinguishable from success.
+    if isempty(out_dir)
+        fprintf('  [not saved: OUT_DIR is empty, figure left on screen]\n');
         return;
     end
+
+    here = fileparts(mfilename('fullpath'));
+    if isempty(here); here = pwd; end
+
+    % try, in order: as given (relative to pwd), then relative to this file
+    cands = {out_dir, fullfile(here, out_dir)};
+    dest  = '';
+    for k = 1:numel(cands)
+        if isfolder(cands{k})
+            d = dir(cands{k});
+            dest = d(1).folder;          % absolute, symlinks resolved
+            break;
+        end
+    end
+
+    if isempty(dest)
+        fprintf(2, ['  [NOT SAVED] could not find the Assets folder.\n' ...
+                    '              tried: %s\n' ...
+                    '                     %s\n' ...
+                    '              pwd is: %s\n' ...
+                    '              Fix: cd to the folder holding ' ...
+                    'figs_results.m, or set OUT_DIR to an absolute path.\n'], ...
+                    cands{1}, cands{2}, pwd);
+        return;
+    end
+
     drawnow;
     f = fullfile(dest, [name '.pdf']);
-    exportgraphics(fig, f, 'ContentType','vector');
-    fprintf('  saved  %s\n', f);
+    try
+        exportgraphics(fig, f, 'ContentType','vector');
+    catch err
+        fprintf(2, '  [NOT SAVED] exportgraphics failed: %s\n', err.message);
+        fprintf(2, '              trying a raster fallback...\n');
+        try
+            f = fullfile(dest, [name '.png']);
+            exportgraphics(fig, f, 'Resolution', 300);
+        catch err2
+            fprintf(2, '  [NOT SAVED] raster fallback failed too: %s\n', err2.message);
+            return;
+        end
+    end
+
+    d = dir(f);
+    fprintf('  SAVED  %s  (%.0f KB)\n', f, d(1).bytes/1024);
 end
 
 
