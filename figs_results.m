@@ -80,6 +80,15 @@ switch FIG
     case 1
         fig_single_hop(Abs_time, mocap_z_raw, mocap_vz_filt, cmd_thrust, ...
                        T_LO, T_HI, PAD_BEFORE, PAD_AFTER, CMD_SUPPRESS_UNTIL);
+    case 2
+        % Spin-artefact filter. Needs R13/R23 and their filtered counterparts.
+        % Use a stretch of steady hover, NOT a hop: the point is the
+        % spin-frequency oscillation, which the hop would obscure.
+        fig_nlms(Abs_time, R13, R23, R13_filt, R23_filt, T_LO, T_HI);
+    case 3
+        % Two consecutive hops. Give T_LO/T_HI spanning BOTH contacts.
+        fig_two_hop(Abs_time, mocap_z_raw, mocap_vz_filt, cmd_thrust, ...
+                    desired_z, T_LO, T_HI);
 end
 
 
@@ -355,6 +364,137 @@ function fig_single_hop(t, z, vz, thrust, t_lo, t_hi, pad_before, pad_after, ...
         ts(i_on), vzs(i_on));
     fprintf('  -> %.0f%% of the velocity reversal occurred at zero lift command\n', ...
         100*(vzs(i_on)-vzs(i_entry)) / (vzs(i_exit)-vzs(i_entry)));
+end
+
+
+%% ---------------------------------------------------------------------
+%  Spin-artefact filter: raw R13/R23 against the filtered estimates that
+%  the controller actually uses. The raw traces oscillate at the spin
+%  frequency because the marker centroid is offset from the true centre of
+%  mass; the filtered traces are what remains once that is removed.
+%  ---------------------------------------------------------------------
+function fig_nlms(t, r13, r23, r13f, r23f, t_lo, t_hi)
+    t=t(:); r13=r13(:); r23=r23(:); r13f=r13f(:); r23f=r23f(:);
+    n=min([numel(t) numel(r13) numel(r23) numel(r13f) numel(r23f)]);
+    t=t(1:n); r13=r13(1:n); r23=r23(1:n); r13f=r13f(1:n); r23f=r23f(1:n);
+
+    if isempty(t_lo) || isempty(t_hi)
+        % default: 3 s of the most oscillatory stretch, which is hover
+        w = round(3/median(diff(t)));
+        best=1; bv=-inf;
+        for k=1:round(w/4):(n-w)
+            v = std(r13(k:k+w));
+            if v>bv && all(isfinite(r13(k:k+w))); bv=v; best=k; end
+        end
+        t_lo=t(best); t_hi=t(min(n,best+w));
+        fprintf('fig_nlms: showing %.2f-%.2f s (set T_LO/T_HI to override)\n', t_lo, t_hi);
+    end
+    m=(t>=t_lo)&(t<=t_hi); ts=(t(m)-t(find(m,1)))*1e3;
+    s=fig_style();
+
+    fig=figure('Name','ch5fig3_nlms','Color','w','Units','centimeters', ...
+        'Position',[2 2 s.fig_width 8.0]);
+    tl=tiledlayout(fig,2,1,'TileSpacing','tight','Padding','compact');
+
+    ax1=nexttile(tl); hold(ax1,'on');
+    plot(ax1, ts, r13(m), '-', 'Color',[0.70 0.70 0.70], 'LineWidth',0.9);
+    plot(ax1, ts, r13f(m),'-', 'Color',s.c_height,   'LineWidth',s.lw_data);
+    ylabel(ax1,'R_{13}','Interpreter',s.interp);
+    format_journal_axis(ax1,s); panel_label(ax1,'A',s); set(ax1,'XTickLabel',[]);
+    legend(ax1,{'raw','filtered'},'Location','northeast','Box','off', ...
+        'FontName',s.font,'FontSize',s.fs_annot);
+
+    ax2=nexttile(tl); hold(ax2,'on');
+    plot(ax2, ts, r23(m), '-', 'Color',[0.70 0.70 0.70], 'LineWidth',0.9);
+    plot(ax2, ts, r23f(m),'-', 'Color',s.c_velocity, 'LineWidth',s.lw_data);
+    ylabel(ax2,'R_{23}','Interpreter',s.interp);
+    xlabel(ax2,'time  [ms]','Interpreter',s.interp);
+    format_journal_axis(ax2,s); panel_label(ax2,'B',s);
+    linkaxes([ax1 ax2],'x'); xlim(ax1,[ts(1) ts(end)]);
+
+    fprintf('\n--- spin-artefact filter ---\n');
+    fprintf('  R13  raw peak-to-peak %.3f  ->  filtered %.3f  (%.0f%% removed)\n', ...
+        range(r13(m)), range(r13f(m)), 100*(1-range(r13f(m))/range(r13(m))));
+    fprintf('  R23  raw peak-to-peak %.3f  ->  filtered %.3f  (%.0f%% removed)\n', ...
+        range(r23(m)), range(r23f(m)), 100*(1-range(r23f(m))/range(r23(m))));
+end
+
+
+%% ---------------------------------------------------------------------
+%  Two consecutive hops: the full cycle closing twice. Same three panels
+%  as the single-hop figure, over a window spanning both contacts.
+%  ---------------------------------------------------------------------
+function fig_two_hop(t, z, vz, thrust, dz, t_lo, t_hi)
+    t=t(:); z=z(:); vz=vz(:); thrust=double(thrust(:));
+    n=min([numel(t) numel(z) numel(vz) numel(thrust)]);
+    t=t(1:n); z=z(1:n); vz=vz(1:n); thrust=thrust(1:n);
+    have_dz = nargin>=5 && ~isempty(dz) && numel(dz)>=n;
+    if have_dz; dz=dz(1:n); end
+
+    if isempty(t_lo) || isempty(t_hi)
+        error(['fig_two_hop: set T_LO/T_HI to a window spanning BOTH hops. ' ...
+               'For stable2hop try T_LO = 14.8; T_HI = 32.2;']);
+    end
+    m=(t>=t_lo)&(t<=t_hi); ts=(t(m)-t(find(m,1)))*1e3;
+    zs=z(m); vs=vz(m); hs=thrust(m);
+    s=fig_style();
+
+    % locate every contact in view: peaks of upward acceleration while unpowered
+    az=gradient(vs, ts/1e3); un=(hs==0);
+    azm=az; azm(~un)=-inf;
+    bands=[]; taken=false(size(azm));
+    for k=1:4
+        cand=azm; cand(taken)=-inf;
+        [pk,ipk]=max(cand);
+        if pk < 15; break; end
+        taken(max(1,ipk-45):min(numel(taken),ipk+45))=true;
+        i=ipk; while i>1 && az(i-1)>0.15*pk; i=i-1; end
+        tol=0.02*(max(vs)-min(vs)); j=ipk;
+        while j<numel(vs) && vs(j+1)>=vs(j)-tol && (ts(j+1)-ts(i))<300; j=j+1; end
+        if vs(i)>-0.5 || vs(j)<0.1; continue; end
+        bands(end+1,:)=[i j]; %#ok<AGROW>
+    end
+    bands=sortrows(bands);
+
+    fig=figure('Name','ch5fig2_two_hop','Color','w','Units','centimeters', ...
+        'Position',[2 2 s.fig_width 10.4]);
+    tl=tiledlayout(fig,3,1,'TileSpacing','tight','Padding','compact');
+
+    ax1=nexttile(tl); hold(ax1,'on');
+    if have_dz
+        plot(ax1, ts, dz(m), '--', 'Color',s.gray, 'LineWidth',s.lw_ref);
+    end
+    plot(ax1, ts, zs, '-', 'Color',s.c_height, 'LineWidth',s.lw_data);
+    ylabel(ax1,'z  [m]','Interpreter',s.interp);
+    format_journal_axis(ax1,s); panel_label(ax1,'A',s); set(ax1,'XTickLabel',[]);
+    if have_dz
+        legend(ax1,{'commanded','measured'},'Location','southeast','Box','off', ...
+            'FontName',s.font,'FontSize',s.fs_annot);
+    end
+
+    ax2=nexttile(tl); hold(ax2,'on');
+    yline(ax2,0,'-','Color',s.gray,'LineWidth',s.lw_ref,'Alpha',0.7);
+    plot(ax2, ts, vs, '-', 'Color',s.c_velocity, 'LineWidth',s.lw_data);
+    ylabel(ax2,'v_z  [m s^{-1}]','Interpreter',s.interp);
+    format_journal_axis(ax2,s); panel_label(ax2,'B',s); set(ax2,'XTickLabel',[]);
+
+    ax3=nexttile(tl); hold(ax3,'on');
+    stairs(ax3, ts, hs/65535*100, '-', 'Color',s.c_command, 'LineWidth',1.2);
+    ylabel(ax3,'lift cmd  [%]','Interpreter',s.interp);
+    xlabel(ax3,'time  [ms]','Interpreter',s.interp);
+    format_journal_axis(ax3,s); panel_label(ax3,'C',s);
+
+    linkaxes([ax1 ax2 ax3],'x'); xlim(ax1,[ts(1) ts(end)]);
+    ylim(ax1, padded_limits(zs,0.12)); ylim(ax2, padded_limits(vs,0.15));
+    ylim(ax3,[-3 max(6, max(hs)/65535*100*1.3)]);
+
+    fprintf('\n--- two-hop sequence ---\n');
+    for k=1:size(bands,1)
+        i=bands(k,1); j=bands(k,2);
+        for ax=[ax1 ax2 ax3]; tint_span(ax, ts(i), ts(j), s.c_water, 0.12); end
+        fprintf(['  hop %d: entry %+.2f m/s, exit %+.2f m/s, contact %.0f ms, ' ...
+                 'release %.2f m\n'], k, vs(i), vs(j), ts(j)-ts(i), max(zs(1:i)));
+    end
 end
 
 
