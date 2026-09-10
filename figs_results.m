@@ -33,10 +33,10 @@ FIG = 1;
 %  Seconds of Abs_time, the LOG's own clock. This is NOT the plot's x-axis,
 %  which always restarts at zero within the window.
 %
-%  Leave both empty to let the figure frame itself. It prints the window it
-%  chose, ready to paste back in once you are happy with it.
+%  BOTH ARE REQUIRED. Figures are pinned to an explicit window so that a
+%  regenerated figure is identical to the one before it.
 %
-%  KNOWN-GOOD WINDOWS  (verified against the logs, 2026-09-09)
+%  KNOWN-GOOD WINDOWS  (verified against the logs)
 %
 %    20260731_191119 highhoplastday          the clean single hop
 %        FIG 1   WIN_LO = 22.27;  WIN_HI = 23.07;
@@ -61,13 +61,10 @@ FIG = 1;
 %    2hops+double      2:  -1.59 -> +1.11  118 ms | -1.82 -> +0.57  222 ms
 %    wobbly2.5         2:  -1.63 -> +0.29  295 ms | -1.58 -> +1.57  137 ms
 %    2hop              1:  -1.57 -> +0.22  296 ms
-%  The two contacts near 300 ms hit the detector's cap: their exits fall
-%  inside a tracking dropout, so they are excluded from the thesis table.
+%  The two near 300 ms hit the detector's cap: their exits fall inside a
+%  tracking dropout, so they are excluded from the thesis table.
 WIN_LO = [];
 WIN_HI = [];
-
-PAD_BEFORE = 0.55;   % s of descent shown before water entry   (auto-framing)
-PAD_AFTER  = 0.18;   % s shown after the foils leave the water (auto-framing)
 
 % --------------------------- COMMAND TRACE -------------------------------
 %  SUPPRESS_CMD draws the lift command as zero from the moment it is cut
@@ -110,6 +107,12 @@ switch FIG
         error('figs_results: FIG must be 1, 2 or 3 (got %g).', FIG);
 end
 
+if isempty(WIN_LO) || isempty(WIN_HI)
+    error(['figs_results: set WIN_LO and WIN_HI. Both are required; see the ' ...
+           'known-good windows listed at the top of this file. For the ' ...
+           'single clean hop:  WIN_LO = 22.27;  WIN_HI = 23.07;']);
+end
+
 missing = {};
 for iNeed = 1:numel(need)
     if ~exist(need{iNeed}, 'var')
@@ -126,7 +129,7 @@ clear iNeed missing need
 switch FIG
     case 1
         fig_single_hop(Abs_time, mocap_z_raw, mocap_vz_filt, cmd_thrust, ...
-            WIN_LO, WIN_HI, PAD_BEFORE, PAD_AFTER, SUPPRESS_CMD, OUT_DIR);
+            WIN_LO, WIN_HI, SUPPRESS_CMD, OUT_DIR);
     case 2
         fig_two_hop(Abs_time, mocap_z_raw, mocap_vz_filt, cmd_thrust, ...
             desired_z, WIN_LO, WIN_HI, OUT_DIR);
@@ -141,24 +144,10 @@ end
 %  The lift rotors are off through the descent, the contact and the
 %  ejection, so the velocity reversal is the work of the hydrofoils alone.
 % =========================================================================
-function fig_single_hop(t, z, vz, thrust, w_lo, w_hi, pad_b, pad_a, suppress, out_dir)
+function fig_single_hop(t, z, vz, thrust, w_lo, w_hi, suppress, out_dir)
 
     [t, z, vz, thrust] = trim_common(t, z, vz, thrust);
 
-    % --- frame the hop ---------------------------------------------------
-    if isempty(w_lo) || isempty(w_hi)
-        C0 = detect_contacts((t - t(1))*1e3, vz, thrust, 1);
-        if isempty(C0)
-            error(['figs_results: no water contact found in this log. ' ...
-                   'Set WIN_LO/WIN_HI by hand.']);
-        end
-        w_lo = t(C0(1).entry) - pad_b;
-        w_hi = t(C0(1).exit)  + pad_a;
-        fprintf('figs_results: log spans %.2f-%.2f s; contact near %.2f s\n', ...
-            t(1), t(end), t(C0(1).peak));
-        fprintf('  to pin this down, set:  WIN_LO = %.2f;  WIN_HI = %.2f;\n', ...
-            w_lo, w_hi);
-    end
     [ts, zs, vs, hs] = cut(t, w_lo, w_hi, z, vz, thrust);
     sanity_check(ts, zs, vs, hs, w_lo, w_hi, t);
 
@@ -275,19 +264,6 @@ function fig_two_hop(t, z, vz, thrust, dz, w_lo, w_hi, out_dir)
 
     [t, z, vz, thrust, dz] = trim_common(t, z, vz, thrust, dz);
 
-    if isempty(w_lo) || isempty(w_hi)
-        C0 = detect_contacts((t - t(1))*1e3, vz, thrust, 4);
-        if numel(C0) < 2
-            error(['figs_results: found %d contacts in this log, need at ' ...
-                   'least 2 for FIG 2. Set WIN_LO/WIN_HI by hand.'], numel(C0));
-        end
-        w_lo = t(C0(1).entry) - 1.2;
-        w_hi = t(C0(end).exit) + 1.2;
-        fprintf('figs_results: %d contacts found; framing %.2f-%.2f s\n', ...
-            numel(C0), w_lo, w_hi);
-        fprintf('  to pin this down, set:  WIN_LO = %.2f;  WIN_HI = %.2f;\n', ...
-            w_lo, w_hi);
-    end
     [ts, zs, vs, hs, dzs] = cut(t, w_lo, w_hi, z, vz, thrust, dz);
     sanity_check(ts, zs, vs, hs, w_lo, w_hi, t);
 
@@ -354,24 +330,6 @@ end
 function fig_nlms(t, r13, r23, r13f, r23f, w_lo, w_hi, out_dir)
 
     [t, r13, r23, r13f, r23f] = trim_common(t, r13, r23, r13f, r23f);
-
-    if isempty(w_lo) || isempty(w_hi)
-        % pick the 3 s stretch where the raw signal swings most, which is
-        % steady hover: the artefact is largest when the spin is fastest
-        dt = median(diff(t));
-        w  = max(10, round(3/dt));
-        best = 1; bv = -inf;
-        for k = 1:max(1,round(w/6)):(numel(t)-w)
-            seg = r13(k:k+w);
-            if ~all(isfinite(seg)); continue; end
-            v = max(seg) - min(seg);
-            if v > bv; bv = v; best = k; end
-        end
-        w_lo = t(best); w_hi = t(min(numel(t), best+w));
-        fprintf('figs_results: showing %.2f-%.2f s\n', w_lo, w_hi);
-        fprintf('  to pin this down, set:  WIN_LO = %.2f;  WIN_HI = %.2f;\n', ...
-            w_lo, w_hi);
-    end
 
     m = (t >= w_lo) & (t <= w_hi);
     if nnz(m) < 10
