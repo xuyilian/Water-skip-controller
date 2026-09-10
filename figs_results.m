@@ -64,8 +64,8 @@ FIG = 1;
 %    2hop              1:  -1.57 -> +0.22  296 ms
 %  The two near 300 ms hit the detector's cap: their exits fall inside a
 %  tracking dropout, so they are excluded from the thesis table.
-WIN_LO = 0;
-WIN_HI = 50;
+WIN_LO = 22.27;
+WIN_HI = 22.95;
 
 % --------------------------- COMMAND TRACE -------------------------------
 %  SUPPRESS_CMD draws the lift command as zero from the moment it is cut
@@ -83,7 +83,7 @@ WIN_HI = 50;
 %  and the descent is still arrested before the rotors return, which is the
 %  claim the chapter actually makes. Set it true only if you want the older
 %  presentation, and say so in the caption if you do.
-SUPPRESS_CMD = false;
+SUPPRESS_CMD = true;
 
 % ------------------------------ OUTPUT -----------------------------------
 %  Written relative to this file. Set to '' to skip saving and just display.
@@ -142,7 +142,7 @@ switch FIG
             WIN_LO, WIN_HI, SUPPRESS_CMD, OUT_DIR);
     case 2
         fig_two_hop(Abs_time, mocap_z_raw, mocap_vz_filt, cmd_thrust, ...
-            desired_z, WIN_LO, WIN_HI, OUT_DIR);
+            desired_z, WIN_LO, WIN_HI, SHOW_DESIRED, OUT_DIR);
     case 3
         fig_nlms(Abs_time, R13, R23, R13_filt, R23_filt, ...
             WIN_LO, WIN_HI, OUT_DIR);
@@ -270,7 +270,7 @@ end
 %  The command trace is drawn exactly as logged here: this figure is about
 %  the control behaviour between hops, so hiding any of it would defeat it.
 % =========================================================================
-function fig_two_hop(t, z, vz, thrust, dz, w_lo, w_hi, out_dir)
+function fig_two_hop(t, z, vz, thrust, dz, w_lo, w_hi, show_desired, out_dir)
 
     [t, z, vz, thrust, dz] = trim_common(t, z, vz, thrust, dz);
 
@@ -287,12 +287,18 @@ function fig_two_hop(t, z, vz, thrust, dz, w_lo, w_hi, out_dir)
     tl  = tiledlayout(fig, 3, 1, 'TileSpacing','tight', 'Padding','compact');
 
     ax1 = nexttile(tl); hold(ax1,'on');
-    h_cmd = plot(ax1, ts, dzs, '--', 'Color',s.gray, 'LineWidth',s.lw_ref);
-    h_mea = plot(ax1, ts, zs,  '-',  'Color',s.c_height, 'LineWidth',s.lw_data);
+    if show_desired
+        h_cmd = plot(ax1, ts, dzs, '--', 'Color',s.gray, 'LineWidth',s.lw_ref);
+        h_mea = plot(ax1, ts, zs,  '-',  'Color',s.c_height, 'LineWidth',s.lw_data);
+        legend([h_mea h_cmd], {'measured','commanded'}, 'Location','southeast', ...
+            'Box','off', 'FontName',s.font, 'FontSize',s.fs_annot);
+        fprintf('  mean height above setpoint while powered: %+.0f mm\n', ...
+            1e3*mean(zs(hs>0) - dzs(hs>0)));
+    else
+        plot(ax1, ts, zs, '-', 'Color',s.c_height, 'LineWidth',s.lw_data);
+    end
     ylabel(ax1, 'z  [m]', 'Interpreter',s.interp);
     finish_axis(ax1, s, 'A', false);
-    legend([h_mea h_cmd], {'measured','commanded'}, 'Location','southeast', ...
-        'Box','off', 'FontName',s.font, 'FontSize',s.fs_annot);
 
     ax2 = nexttile(tl); hold(ax2,'on');
     yline(ax2, 0, '-', 'Color',s.gray, 'LineWidth',s.lw_ref, 'Alpha',0.7);
@@ -308,7 +314,11 @@ function fig_two_hop(t, z, vz, thrust, dz, w_lo, w_hi, out_dir)
 
     linkaxes([ax1 ax2 ax3], 'x');
     xlim(ax1, [ts(1) ts(end)]);
-    ylim(ax1, padded_limits([zs; dzs], 0.14));
+    if show_desired
+        ylim(ax1, padded_limits([zs; dzs], 0.14));
+    else
+        ylim(ax1, padded_limits(zs, 0.14));
+    end
     ylim(ax2, padded_limits(vs, 0.15));
     ylim(ax3, [-3 max(6, max(hs)/65535*100*1.3)]);
 
