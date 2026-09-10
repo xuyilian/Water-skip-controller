@@ -27,7 +27,7 @@
 % =========================================================================
 
 % ------------------------------ WHAT TO BUILD ----------------------------
-FIG = 1;
+FIG = 2;
 
 % ------------------------------ TIME WINDOW ------------------------------
 %  Seconds of Abs_time, the LOG's own clock. This is NOT the plot's x-axis,
@@ -64,8 +64,8 @@ FIG = 1;
 %    2hop              1:  -1.57 -> +0.22  296 ms
 %  The two near 300 ms hit the detector's cap: their exits fall inside a
 %  tracking dropout, so they are excluded from the thesis table.
-WIN_LO = 22.27;
-WIN_HI = 22.95;
+WIN_LO = [];
+WIN_HI = [];
 
 % --------------------------- COMMAND TRACE -------------------------------
 %  SUPPRESS_CMD draws the lift command as zero from the moment it is cut
@@ -83,7 +83,19 @@ WIN_HI = 22.95;
 %  and the descent is still arrested before the rotors return, which is the
 %  claim the chapter actually makes. Set it true only if you want the older
 %  presentation, and say so in the caption if you do.
-SUPPRESS_CMD = true;
+SUPPRESS_CMD = false;
+
+% --------------------- COMMANDED HEIGHT (FIG 2 only) ---------------------
+%  Overlay desired_z on panel A of the two-hop figure.
+%
+%  DEFAULT IS FALSE. The height controller is proportional-derivative with
+%  no integral term, so the vehicle settles about 110 mm above its setpoint
+%  and holds that offset steadily. Drawing the setpoint therefore shows a
+%  constant gap that reads as poor tracking and invites a question the
+%  chapter is not about. The figure's job is to show the vehicle returning
+%  to the SAME height before each hop, and the measured trace shows that on
+%  its own: the two releases agree to within 8 mm.
+SHOW_DESIRED = false;
 
 % ------------------------------ OUTPUT -----------------------------------
 %  Written relative to this file. Set to '' to skip saving and just display.
