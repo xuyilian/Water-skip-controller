@@ -27,7 +27,7 @@
 % =========================================================================
 
 % ------------------------------ WHAT TO BUILD ----------------------------
-FIG = 2;
+FIG = 3;
 
 % ------------------------------ TIME WINDOW ------------------------------
 %  Seconds of Abs_time, the LOG's own clock. This is NOT the plot's x-axis,
@@ -64,8 +64,8 @@ FIG = 2;
 %    2hop              1:  -1.57 -> +0.22  296 ms
 %  The two near 300 ms hit the detector's cap: their exits fall inside a
 %  tracking dropout, so they are excluded from the thesis table.
-WIN_LO = [];
-WIN_HI = [];
+WIN_LO = 10;
+WIN_HI = 14;
 
 % --------------------------- COMMAND TRACE -------------------------------
 %  SUPPRESS_CMD draws the lift command as zero from the moment it is cut
