@@ -241,11 +241,9 @@ function fig_single_hop(t, z, vz, thrust, w_lo, w_hi, pad_b, pad_a, suppress, ou
     % data is genuinely zero.
     cmd_top = max(hs_draw)/65535*100;
     ylim(ax3, [-3, max(6, cmd_top*1.35)]);
-    if cmd_top < 1
-        fprintf(2, ['  [CHECK] the command trace is flat at zero across this ' ...
-                    'window. If that is not what the log holds, MATLAB may be ' ...
-                    'running a cached copy of this file: run "clear all; ' ...
-                    'rehash" and try again.\n']);
+    if cmd_top < 1 && any(hs_draw > 0)
+        fprintf(2, ['  [CHECK] non-zero commands are present but scale to 0%%. ' ...
+                    'That is integer division: cast the field to double.\n']);
     end
 
     % key heights, with the recovered height read at the end of contact so
@@ -533,10 +531,16 @@ end
 %  Data helpers
 % =========================================================================
 function varargout = trim_common(varargin)
-    % Force column vectors and trim all inputs to the shortest length.
+    % Force column vectors of class double, trimmed to the shortest length.
+    %
+    % The double() cast is essential, not cosmetic. cmd_thrust is stored as
+    % int64 in the logs, and MATLAB integer arithmetic rounds: int64 32747
+    % divided by 65535 is 0, not 0.4997, so a percentage-of-full-scale trace
+    % computed from the raw field collapses silently to a flat zero line
+    % while every other quantity still looks right.
     n = inf;
     for k = 1:nargin
-        v = varargin{k}(:);
+        v = double(varargin{k}(:));
         n = min(n, numel(v));
         varargin{k} = v;
     end
