@@ -235,6 +235,19 @@ function fig_single_hop(t, z, vz, thrust, w_lo, w_hi, pad_b, pad_a, suppress, ou
     mark_span(ax1, ts(c.entry), ts(c.exit), s.c_water, 'contact', s);
     mark_span(ax3, ts(c.off),  ts(i_on_draw), s.ink, 'lift rotors off', s);
 
+    % Re-assert the command axis last. The span helpers read and restore the
+    % limits, so anything that disturbed them earlier would otherwise persist,
+    % and a command panel whose top is 6% is indistinguishable from one whose
+    % data is genuinely zero.
+    cmd_top = max(hs_draw)/65535*100;
+    ylim(ax3, [-3, max(6, cmd_top*1.35)]);
+    if cmd_top < 1
+        fprintf(2, ['  [CHECK] the command trace is flat at zero across this ' ...
+                    'window. If that is not what the log holds, MATLAB may be ' ...
+                    'running a cached copy of this file: run "clear all; ' ...
+                    'rehash" and try again.\n']);
+    end
+
     % key heights, with the recovered height read at the end of contact so
     % panels A and B mark the same instant
     [z_low, i_low] = min(zs);
