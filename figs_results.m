@@ -27,7 +27,7 @@
 % =========================================================================
 
 % ------------------------------ WHAT TO BUILD ----------------------------
-FIG = 3;
+FIG = 1;
 
 % ------------------------------ TIME WINDOW ------------------------------
 %  Seconds of Abs_time, the LOG's own clock. This is NOT the plot's x-axis,
@@ -70,18 +70,22 @@ PAD_BEFORE = 0.55;   % s of descent shown before water entry   (auto-framing)
 PAD_AFTER  = 0.18;   % s shown after the foils leave the water (auto-framing)
 
 % --------------------------- COMMAND TRACE -------------------------------
-%  Draws the lift command as zero from the moment it is cut until the end of
-%  the contact. Control is restored a few tens of milliseconds before the
-%  apex at a thrust-to-weight well under 0.4, which cannot support the
-%  vehicle; drawing that tail invites the reader to think the hop was
-%  assisted. This changes the PANEL ONLY. Every number printed to the
-%  console and quoted in the text is computed from the logged command, and a
-%  warning naming what was hidden is printed whenever it is active.
+%  SUPPRESS_CMD draws the lift command as zero from the moment it is cut
+%  until the end of the contact.
 %
-%      true   suppress through the end of contact   (FIG 1)
-%      false  draw exactly as logged                (FIG 2, which is about
-%                                                    the control behaviour)
-SUPPRESS_CMD = true;
+%  DEFAULT IS FALSE, and that is the recommendation. It was introduced when
+%  the contact boundary was taken at the velocity minimum, which put control
+%  restoration after the contact at a thrust-to-weight around 0.33. With the
+%  boundary corrected to the knee of the velocity rise, the rotors come back
+%  on roughly 40 ms INTO a 75 ms contact, reaching 0.64 of hover, and about
+%  half the velocity reversal happens with them on. Hiding that is no longer
+%  a small tidy-up.
+%
+%  Leaving it false costs nothing: the descent is still visibly unpowered,
+%  and the descent is still arrested before the rotors return, which is the
+%  claim the chapter actually makes. Set it true only if you want the older
+%  presentation, and say so in the caption if you do.
+SUPPRESS_CMD = false;
 
 % ------------------------------ OUTPUT -----------------------------------
 %  Written relative to this file. Set to '' to skip saving and just display.
@@ -167,23 +171,35 @@ function fig_single_hop(t, z, vz, thrust, w_lo, w_hi, pad_b, pad_a, suppress, ou
     c = C(1);
 
     % --- optional suppression of the command tail ------------------------
-    hs_draw = hs;
+    hs_draw   = hs;
     i_on_draw = c.on;
     if suppress && c.on > c.off
-        i_sup = max(c.on, c.exit);
+        i_sup  = max(c.on, c.exit);
         hidden = (hs(c.off:i_sup) > 0);
         if any(hidden)
             hover = median(hs(1:max(1, c.off-1)));
-            warning(['figs_results: lift command drawn as zero from %.0f to ' ...
-                     '%.0f ms; %d logged non-zero samples hidden, peak %.0f%% ' ...
-                     'of full scale (T/W <= %.2f). State this in the caption.'], ...
-                     ts(c.off), ts(i_sup), nnz(hidden), ...
-                     max(hs(c.off:i_sup))/65535*100, ...
-                     max(hs(c.off:i_sup))/max(hover, eps));
+            fprintf(2, ['  [SUPPRESSED] command drawn as zero %.0f-%.0f ms: ' ...
+                        '%d non-zero samples hidden, peak %.0f%% f.s. ' ...
+                        '(T/W %.2f). Say so in the caption.\n'], ...
+                        ts(c.off), ts(i_sup), nnz(hidden), ...
+                        max(hs(c.off:i_sup))/65535*100, ...
+                        max(hs(c.off:i_sup))/max(hover, eps));
         end
         hs_draw(c.off:i_sup) = 0;
         i_on_draw = i_sup;
     end
+
+    % Always say what panel C is actually showing. A flat trace is otherwise
+    % indistinguishable from a plotting fault.
+    if suppress
+        mode_str = 'suppression ON';
+    else
+        mode_str = 'as logged';
+    end
+    fprintf(['  command panel: %.0f to %.0f%% of full scale, zero for %d of ' ...
+             '%d samples (%s)\n'], ...
+             min(hs_draw)/65535*100, max(hs_draw)/65535*100, ...
+             nnz(hs_draw == 0), numel(hs_draw), mode_str);
 
     % --- draw -------------------------------------------------------------
     s = fig_style();
