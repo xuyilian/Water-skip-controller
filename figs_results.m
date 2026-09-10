@@ -33,8 +33,9 @@ FIG = 1;
 %  Seconds of Abs_time, the LOG's own clock. This is NOT the plot's x-axis,
 %  which always restarts at zero within the window.
 %
-%  BOTH ARE REQUIRED. Figures are pinned to an explicit window so that a
-%  regenerated figure is identical to the one before it.
+%  Leave both empty to plot the FULL record, which is the way to find the
+%  part you want. For anything going into the thesis, set them: a figure
+%  pinned to an explicit window regenerates identically every time.
 %
 %  KNOWN-GOOD WINDOWS  (verified against the logs)
 %
@@ -63,8 +64,8 @@ FIG = 1;
 %    2hop              1:  -1.57 -> +0.22  296 ms
 %  The two near 300 ms hit the detector's cap: their exits fall inside a
 %  tracking dropout, so they are excluded from the thesis table.
-WIN_LO = [];
-WIN_HI = [];
+WIN_LO = 0;
+WIN_HI = 50;
 
 % --------------------------- COMMAND TRACE -------------------------------
 %  SUPPRESS_CMD draws the lift command as zero from the moment it is cut
@@ -107,10 +108,19 @@ switch FIG
         error('figs_results: FIG must be 1, 2 or 3 (got %g).', FIG);
 end
 
-if isempty(WIN_LO) || isempty(WIN_HI)
-    error(['figs_results: set WIN_LO and WIN_HI. Both are required; see the ' ...
-           'known-good windows listed at the top of this file. For the ' ...
-           'single clean hop:  WIN_LO = 22.27;  WIN_HI = 23.07;']);
+% An empty window means "show me everything": the whole record is plotted so
+% you can see where the interesting part is, then pin it down by setting
+% WIN_LO/WIN_HI. Nothing is guessed on your behalf.
+if isempty(WIN_LO); WIN_LO = Abs_time(1);   end
+if isempty(WIN_HI); WIN_HI = Abs_time(end); end
+fprintf('figs_results: FIG %d over %.2f-%.2f s of a log spanning %.2f-%.2f s\n', ...
+    FIG, WIN_LO, WIN_HI, Abs_time(1), Abs_time(end));
+if WIN_LO <= Abs_time(1) && WIN_HI >= Abs_time(end)
+    fprintf(['  showing the FULL record, so this is a survey view and will ' ...
+             'NOT be saved.\n  Set WIN_LO/WIN_HI to pin the figure and write ' ...
+             'it to Assets; the header lists a verified window for every ' ...
+             'log.\n']);
+    OUT_DIR = '';   % never overwrite a thesis figure with a survey view
 end
 
 missing = {};
