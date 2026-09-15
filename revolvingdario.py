@@ -179,7 +179,7 @@ MACHINES = [
         'bi_r13_r23_kp': -25.5,       # TODO: recalibrate
         'bi_xy_kp': 0.35,             # TODO: recalibrate
         'bi_xy_kd': 0.6,              # TODO: recalibrate
-        'mixer_type': 1,              # selects powerDistributionTangentialSpin in firmware
+        'mixer_type': 1,              # DEAD: powerDist.mixerType absent in fw 53eca3c2 (see note at powerDist setup)
         'spin_thrust': 30000,         # TODO: bench-tune from scratch -- fixed thrust for motors 2 & 4, brushless DSHOT curve
         'drop_spin_thrust': 30000,    # TODO: tune separately from spin_thrust -- motors 2/4 thrust during DROP mode only
         'motor_thrust_ceiling': 60000, # per-motor max thrust, this board
@@ -234,7 +234,7 @@ MACHINES = [
         'bi_r13_r23_kp': -32,        # TODO: recalibrate
         'bi_xy_kp': 0.3,              # TODO: recalibrate
         'bi_xy_kd': 0.6,               # TODO: recalibrate
-        'mixer_type': 1,               # selects powerDistributionTangentialSpin in firmware
+        'mixer_type': 1,               # DEAD: powerDist.mixerType absent in fw 53eca3c2
         'spin_thrust': 40000,          # TODO: bench-tune from scratch
         'drop_spin_thrust': 40000,     # TODO: tune separately from spin_thrust -- motors 2/4 thrust during DROP mode only
         'motor_thrust_ceiling': 65535, # per-motor max thrust, this board
@@ -810,11 +810,26 @@ if __name__ == '__main__':
     except Exception as e:
         print(f'[WARN] failed to set powerDist.idleThrust: {e}')
 
-    # Select the firmware motor mixer for this machine. powerDist.mixerType is
-    # NOT persistent (resets to 0/legacy on every boot), so it must be set
-    # explicitly every connection -- this is what lets one firmware image
-    # (cf2.bin) serve both the legacy 4-motor boards and the tangential-spin
-    # board, switched purely by which MACHINES entry you pick at startup.
+    # !! DEAD CODE -- VERIFIED AGAINST FIRMWARE 53eca3c2 (2026-09-15) !!
+    #
+    # powerDist.mixerType, powerDist.spinThrust and powerDist.thrustCap DO NOT
+    # EXIST in the flown firmware. Only idleThrust and m24Thrust are defined
+    # (power_distribution_quadrotor.c, PARAM_GROUP powerDist).
+    #
+    # Because all three sit in this ONE try block, mixerType raises first, the
+    # except fires, and spinThrust and thrustCap are never even attempted. The
+    # only trace at runtime is the [WARN] line below.
+    #
+    # The spin is NOT set by machine['spin_thrust']. It comes from the constant
+    # yaw term in the revolving setpoint: stabilizer.c sets
+    # control.yaw = setpoint.attitude.yaw * 20000, which the stock quadrotor
+    # mixer applies as +yaw to m1/m3 and -yaw to m2/m4. That differential is
+    # what drives the rotation.
+    #
+    # Left in place rather than deleted because it is harmless (it no-ops) and
+    # because removing it would change startup behaviour on a machine that has
+    # not been re-verified. Do not "fix" it by renaming to m24Thrust without
+    # bench-testing: m24Thrust bypasses battery compensation and the idle floor.
     try:
         mixer_type = machine.get('mixer_type', 0)
         lc.cf.param.set_value('powerDist.mixerType', str(mixer_type))
