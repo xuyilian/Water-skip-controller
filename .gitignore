@@ -11,3 +11,14 @@ __pycache__/
 .env
 .venv/
 venv/
+
+# Raw flight logs. ~1300 files, several hundred MB, and they are working data
+# rather than source: the curated cases that the thesis actually cites live in
+# "test results raw material/test_results_designs/", outside this repo.
+# Committing these once bloats the history permanently.
+DataExchange/*.mat
+
+# MATLAB figure output directories (matlab_figures_*). Regenerated from
+# simu.m and figs_results.m; the versions that reach the paper are committed
+# in paper/CityUHKThesis-main/Assets/ instead.
+matlab_figures*/
