@@ -1,5 +1,6 @@
 %% Water-skip controller flight-log analysis
-% Plots the signals saved by revolvinglian.py (DataExchange/*.mat).
+% Plots the signals saved by revolvingdario.py (DataExchange/*.mat).
+% (Earlier logs came from revolvinglian.py, now in archive/scripts/.)
 %
 % Usage:
 %   1) Load a log into the workspace, e.g.:
