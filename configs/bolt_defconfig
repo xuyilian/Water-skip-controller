@@ -4,3 +4,20 @@ CONFIG_ESTIMATOR_AUTO_SELECT=y
 CONFIG_CONTROLLER_AUTO_SELECT=y
 
 CONFIG_MOTORS_REQUIRE_ARMING=y
+
+# Water-hop project: this Bolt board carries the same tangential-spin
+# brushless motor setup as the retired CF2.1BL board. Default ESC protocol
+# for this platform would otherwise be OneShot; use DSHOT instead.
+CONFIG_MOTORS_ESC_PROTOCOL_DSHOT=y
+
+# Bidirectional DSHOT (RPM telemetry) defaults to on whenever DSHOT is
+# selected, but this project never reads motor RPM telemetry anywhere, and
+# it adds a receive/decode state machine on top of the M1/M2 shared-DMA
+# output scheme (motors.c) that we suspect is implicated in M1 dropping out
+# after sustained flight. Disabled to remove that extra complexity.
+# CONFIG_MOTORS_ESC_PROTOCOL_DSHOT_BIDIRECTIONAL is not set
+
+# NOTE: a separate OneShot125 DIAGNOSTIC build was also produced from this
+# defconfig (temporarily swapped, then reverted) to test whether the DSHOT
+# DMA-burst/IRQ scheme itself is implicated in M1 dropping out under
+# sustained flight -- see build/bolt_oneshot125_diag.bin.

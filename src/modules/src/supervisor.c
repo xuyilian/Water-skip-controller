@@ -371,13 +371,17 @@ static supervisorConditionBits_t updateAndPopulateConditions(SupervisorMem_t* th
     conditions |= SUPERVISOR_CB_CRASHED;
   }
 
-  if (supervisorIsPreflightTimeout(this, currentTick)) {
-    conditions |= SUPERVISOR_CB_PREFLIGHT_TIMEOUT;
-  }
+  // Preflight timeout (30 s) DISABLED for the water-hopping MAV: isFlyingCheck
+  // is disabled on this firmware, so the vehicle never leaves ReadyToFly and
+  // would otherwise be disarmed mid-air at 30 s. Never raise the condition bit.
+  // if (supervisorIsPreflightTimeout(this, currentTick)) {
+  //   conditions |= SUPERVISOR_CB_PREFLIGHT_TIMEOUT;
+  // }
 
-  if (supervisorIsLandingTimeout(this, currentTick)) {
-    conditions |= SUPERVISOR_CB_LANDING_TIMEOUT;
-  }
+  // Landing timeout (3 s) DISABLED for the water-hopping MAV.
+  // if (supervisorIsLandingTimeout(this, currentTick)) {
+  //   conditions |= SUPERVISOR_CB_LANDING_TIMEOUT;
+  // }
 
   return conditions;
 }

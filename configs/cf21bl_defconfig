@@ -2,3 +2,10 @@ CONFIG_PLATFORM_CF21BL=y
 
 CONFIG_MOTORS_REQUIRE_ARMING=y
 CONFIG_MOTORS_ESC_PROTOCOL_DSHOT=y
+
+# Bidirectional DSHOT (RPM telemetry) defaults to on whenever DSHOT is
+# selected, but this project never reads motor RPM telemetry anywhere, and
+# it adds a receive/decode state machine on top of the M1/M2 shared-DMA
+# output scheme (motors.c) that we suspect is implicated in M1 dropping out
+# after sustained flight. Disabled to remove that extra complexity.
+# CONFIG_MOTORS_ESC_PROTOCOL_DSHOT_BIDIRECTIONAL is not set
