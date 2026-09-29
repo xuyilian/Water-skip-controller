@@ -15,7 +15,8 @@ clear; clc; close all;
 %  (depth > cf*sin(beta)).  All other parameters are held constant.
 % =========================================================================
 
-RUN_FIXED_RTIP_SCATTER_ONLY = true;   % true: only generate the fixed-rtip beta-zdot figure
+RUN_FIXED_RTIP_SCATTER_ONLY = false;  % true: only generate the fixed-rtip beta-zdot figure
+RUN_CH2_TRAJECTORY_OVERLAY  = true;   % true: regenerate thesis Fig 2.2 and stop
 
 %% ===== Fixed parameters (held constant) =====
 % AS-BUILT VEHICLE (updated 2026-08-17). Every value here describes the
@@ -40,15 +41,21 @@ g    = 9.81;         % gravitational acceleration [m/s^2]
 rinner = 75e-3;      % foil ROOT radius [m] -- where the foil starts
 % rtip is set per case; its nominal value is nom.rtip below.
 
-% Moment of inertia about the spin axis: uniform 2-D disk of the vehicle mass
-%   I = m * R_disk^2.
-% R_disk is taken as the full tip radius, 145 mm: the legs and foils reach
-% that far and carry real mass, so the vehicle's inertia is set by its whole
-% span rather than by the motor-mount circle alone.
+% Moment of inertia about the spin axis: thin HOOP of the vehicle mass at the
+% motor-mount circle,
+%   I = m * r_hoop^2,   r_hoop = 75 mm.
+% The mass is rim-weighted but not out at the tip: the four motors sit on the
+% 75 mm circle and the legs hang from them, while the battery and the Bolt
+% board sit near the centre. The circle through the motor centres is therefore
+% the better single radius to lump the mass onto.
+% CHANGED 2026-09-24: was a "uniform disk" at the 145 mm tip radius, but with
+% I = m*R^2 that formula is a hoop, not a disk, and 145 mm credited the vehicle
+% with roughly 3.7x the inertia this one gives. Every predicted spin loss and
+% contact duration in Ch.2 moves as a result.
 % TODO: still a PLACEHOLDER -- the MoI has never been measured. omega_exit
 % depends on it directly, so measure it before quoting a predicted spin loss.
-R_disk = 145e-3;     % disk radius [m] = foil tip radius
-I      = m * R_disk^2;
+r_hoop = 75e-3;      % hoop radius [m] = motor-mount circle
+I      = m * r_hoop^2;
 
 % Spin: entry value and the controller minimum (both given in deg/s).
 % Read from the logged mocap yaw rate. NOTE the signal oscillates strongly
@@ -101,6 +108,12 @@ rinner_list = [0.025 0.050 0.075 0.100 0.125];            % m, must stay < rtip
 %% ===== Pack constants into a struct for the helpers =====
 params = struct('N',N,'cf',cf,'m',m,'I',I,'rho',rho,'g',g,'rinner',rinner, ...
                 'omega0',omega0,'omega_min',omega_min,'z0',z0,'t',t,'dt',dt);
+
+%% ===== Fast path: thesis Fig 2.2, nine contacts (3 beta x 3 entry speed) =====
+if RUN_CH2_TRAJECTORY_OVERLAY
+    plot_ch2_hop_trajectories(nom.rtip, params);
+    return;
+end
 
 %% ===== Fast path: fixed-rtip beta-zdot plane colored by exit speed =====
 if RUN_FIXED_RTIP_SCATTER_ONLY
@@ -1083,4 +1096,101 @@ function [T_total, Q_total] = compute_thrust_and_torque(rinner, rtip, beta, N, c
     T_total = N * T_foil;
     Q_total = N * Q_foil;
     Q_total = max(Q_total, 0);          % resisting torque is non-negative
+end
+
+function plot_ch2_hop_trajectories(rtip, p)
+% Thesis Figure 2.2: nine simulated contacts, three foil inclinations crossed
+% with three entry speeds, all entering at the measured freefall spin.
+%
+% beta = 30 deg is the AS-BUILT foil, so the figure contains the angle that
+% actually flew. The earlier version used 28 deg, an artifact of a linspace
+% grid corresponding to no real foil.
+%
+% Three stacked panels sharing a time axis: penetration depth z, vertical
+% velocity zdot, and spin omega. Depth is shown because it drives the wetted
+% chord c_sub and therefore the whole force history.
+%
+% Also prints the energy ledger quoted in Section 2.5. The fraction of
+% ROTATIONAL ENERGY consumed is 1 - (omega_exit/omega_0)^2, which is
+% independent of I; the conversion efficiency is not, and scales as 1/I.
+
+    beta_deg  = [10 30 45];
+    zdot0_lst = [-1.0 -2.0 -3.0];
+
+    colors = [0.00 0.45 0.74;      % beta 10
+              0.85 0.33 0.10;      % beta 30 (as built)
+              0.47 0.67 0.19];     % beta 45
+
+    fig = figure('Color','w','Units','centimeters','Position',[2 2 16 15]);
+    set(fig,'InvertHardcopy','off');
+    ax = gobjects(1,3);
+    for k = 1:3
+        ax(k) = subplot(3,1,k,'Parent',fig);
+        set(ax(k),'Color','w','XColor','k','YColor','k','Box','on');
+        hold(ax(k),'on');
+    end
+
+    t_ms = []; z_ex = []; ret = []; eta = []; espent = [];
+    for ib = 1:numel(beta_deg)
+        for iz = 1:numel(zdot0_lst)
+            [tt, om, zd, om_ex, zd_ex, t_ex] = ...
+                run_case(rtip, deg2rad(beta_deg(ib)), zdot0_lst(iz), p, p.rinner);
+            if isempty(tt) || ~isfinite(t_ex), continue; end
+
+            zz = cumtrapz(tt, zd);        % depth from the surface, z(0) = 0
+            lw = 1.0 + 0.45*(iz-1);
+            plot(ax(1), tt*1e3, zz*1e3, '-', 'Color',colors(ib,:), 'LineWidth',lw);
+            plot(ax(2), tt*1e3, zd,     '-', 'Color',colors(ib,:), 'LineWidth',lw);
+            plot(ax(3), tt*1e3, rad2deg(om),'-','Color',colors(ib,:), 'LineWidth',lw);
+            plot(ax(1), t_ex*1e3, zz(end)*1e3,'o','MarkerSize',4.5, ...
+                 'MarkerFaceColor',colors(ib,:),'MarkerEdgeColor',colors(ib,:));
+            plot(ax(2), t_ex*1e3, zd_ex,      'o','MarkerSize',4.5, ...
+                 'MarkerFaceColor',colors(ib,:),'MarkerEdgeColor',colors(ib,:));
+            plot(ax(3), t_ex*1e3, rad2deg(om_ex),'o','MarkerSize',4.5, ...
+                 'MarkerFaceColor',colors(ib,:),'MarkerEdgeColor',colors(ib,:));
+
+            r  = om_ex/p.omega0;
+            Er = 0.5*p.I*p.omega0^2*(1 - r^2);          % rotational energy spent [J]
+            Eo = 0.5*p.m*zd_ex^2;                       % vertical KE at exit [J]
+
+            t_ms(end+1)   = t_ex*1e3;          %#ok<AGROW>
+            z_ex(end+1)   = zd_ex;             %#ok<AGROW>
+            ret(end+1)    = 100*r;             %#ok<AGROW>
+            espent(end+1) = 100*(1 - r^2);     %#ok<AGROW>
+            eta(end+1)    = 100*Eo/Er;         %#ok<AGROW>
+
+            fprintf(['  beta %2d, zdot0 %+.1f -> t %6.2f ms, exit %+6.3f m/s, ' ...
+                     'spin kept %5.1f %%, rot. energy spent %5.1f %%, eta %4.2f %%\n'], ...
+                beta_deg(ib), zdot0_lst(iz), t_ex*1e3, zd_ex, 100*r, 100*(1-r^2), 100*Eo/Er);
+        end
+    end
+
+    ylabel(ax(1),'depth $z$ [mm]','Interpreter','latex');
+    ylabel(ax(2),'$\dot{z}$ [m s$^{-1}$]','Interpreter','latex');
+    ylabel(ax(3),'$\omega$ [deg s$^{-1}$]','Interpreter','latex');
+    xlabel(ax(3),'time from water entry [ms]');
+    yline(ax(1), 0, ':', 'Color',[0.45 0.45 0.45]);
+    yline(ax(2), 0, ':', 'Color',[0.45 0.45 0.45]);
+    linkaxes(ax,'x');
+    set(ax(1:2),'XTickLabel',[]);
+
+    h = gobjects(1,numel(beta_deg));
+    for ib = 1:numel(beta_deg)
+        h(ib) = plot(ax(2), NaN, NaN, '-', 'Color',colors(ib,:), 'LineWidth',1.4);
+    end
+    legend(ax(2), h, compose('\\beta = %d deg', beta_deg), ...
+           'Location','southeast','Box','off');
+
+    fprintf('\n  ---- ranges for Section 2.5 ----\n');
+    fprintf('  contact            : %.1f to %.1f ms\n', min(t_ms), max(t_ms));
+    fprintf('  exit velocity      : %+.2f to %+.2f m/s\n', min(z_ex), max(z_ex));
+    fprintf('  spin retained      : %.0f%% to %.0f%%\n', min(ret), max(ret));
+    fprintf('  rot. energy spent  : %.0f%% to %.0f%%\n', min(espent), max(espent));
+    fprintf('  conversion eta     : %.2f%% to %.2f%%\n', min(eta), max(eta));
+    fprintf('  cases ejecting     : %d of 9\n\n', sum(z_ex > 0));
+
+    out = fullfile('..','..','paper','CityUHKThesis-main','Assets', ...
+                   'ch2fig1_hop_trajectories.pdf');
+    exportgraphics(fig, out, 'ContentType','vector');
+    fprintf('  wrote %s\n', out);
 end
