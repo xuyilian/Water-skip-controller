@@ -111,7 +111,8 @@ OUT_DIR = fullfile('..','..','paper','CityUHKThesis-main','Assets');
 % =========================================================================
 switch FIG
     case 1
-        need = {'Abs_time','mocap_z_raw','mocap_vz_filt','cmd_thrust'};
+        need = {'Abs_time','mocap_z_raw','mocap_vz_filt','cmd_thrust', ...
+                'mocap_yawrate_deg','mocap_yawrate_deg_filt'};
     case 2
         need = {'Abs_time','mocap_z_raw','mocap_vz_filt','cmd_thrust','desired_z'};
     case 3
@@ -151,6 +152,7 @@ clear iNeed missing need
 switch FIG
     case 1
         fig_single_hop(Abs_time, mocap_z_raw, mocap_vz_filt, cmd_thrust, ...
+            mocap_yawrate_deg, mocap_yawrate_deg_filt, ...
             WIN_LO, WIN_HI, SUPPRESS_CMD, OUT_DIR);
     case 2
         fig_two_hop(Abs_time, mocap_z_raw, mocap_vz_filt, cmd_thrust, ...
@@ -166,12 +168,31 @@ end
 %  The lift rotors are off through the descent, the contact and the
 %  ejection, so the velocity reversal is the work of the hydrofoils alone.
 % =========================================================================
-function fig_single_hop(t, z, vz, thrust, w_lo, w_hi, suppress, out_dir)
+function fig_single_hop(t, z, vz, thrust, wr_raw, wr_filt, ...
+                        w_lo, w_hi, suppress, out_dir)
 
-    [t, z, vz, thrust] = trim_common(t, z, vz, thrust);
+    [t, z, vz, thrust, wr_raw, wr_filt] = ...
+        trim_common(t, z, vz, thrust, wr_raw, wr_filt);
 
-    [ts, zs, vs, hs] = cut(t, w_lo, w_hi, z, vz, thrust);
+    [ts, zs, vs, hs, wrs, wfs] = cut(t, w_lo, w_hi, z, vz, thrust, wr_raw, wr_filt);
     sanity_check(ts, zs, vs, hs, w_lo, w_hi, t);
+
+    % --- condition the spin trace ----------------------------------------
+    % Two artefacts have to be handled or the panel misleads.
+    %   1. When the splash obscures the markers the logged rate drops to
+    %      exactly zero. Drawn as zero it reads as the vehicle having stopped
+    %      spinning, so those samples are blanked to NaN and appear as a gap.
+    %   2. Unwrapping the mocap yaw at ~22 rev/s leaves isolated one-sample
+    %      spikes, here to around 12000 deg/s. A short running median removes
+    %      them without touching the step at water contact.
+    spin  = abs(wfs);
+    lost  = (wrs == 0) | (wfs == 0);
+    spin  = movmedian(spin, 5, 'omitnan');
+    spin(lost) = NaN;
+    if any(lost)
+        fprintf('  spin panel: %d of %d samples blanked as tracking dropout\n', ...
+                nnz(lost), numel(lost));
+    end
 
     % --- locate the contact inside the window ----------------------------
     C = detect_contacts(ts, vs, hs, 1);
@@ -214,8 +235,8 @@ function fig_single_hop(t, z, vz, thrust, w_lo, w_hi, suppress, out_dir)
 
     % --- draw -------------------------------------------------------------
     s = fig_style();
-    fig = new_figure('ch5fig1_single_hop', s.fig_width, 10.4);
-    tl  = tiledlayout(fig, 3, 1, 'TileSpacing','tight', 'Padding','compact');
+    fig = new_figure('ch5fig1_single_hop', s.fig_width, 13.0);
+    tl  = tiledlayout(fig, 4, 1, 'TileSpacing','tight', 'Padding','compact');
 
     ax1 = nexttile(tl); hold(ax1,'on');
     plot(ax1, ts, zs, '-', 'Color',s.c_height, 'LineWidth',s.lw_data);
@@ -231,16 +252,22 @@ function fig_single_hop(t, z, vz, thrust, w_lo, w_hi, suppress, out_dir)
     ax3 = nexttile(tl); hold(ax3,'on');
     stairs(ax3, ts, hs_draw/65535*100, '-', 'Color',s.c_command, 'LineWidth',s.lw_data);
     ylabel(ax3, 'lift cmd  [%]', 'Interpreter',s.interp);
-    xlabel(ax3, 'time  [ms]', 'Interpreter',s.interp);
-    finish_axis(ax3, s, 'C', true);
+    finish_axis(ax3, s, 'C', false);
 
-    linkaxes([ax1 ax2 ax3], 'x');
+    ax4 = nexttile(tl); hold(ax4,'on');
+    plot(ax4, ts, spin, '-', 'Color',s.ink, 'LineWidth',s.lw_data);
+    ylabel(ax4, '|\omega_z|  [deg s^{-1}]', 'Interpreter','tex');
+    xlabel(ax4, 'time  [ms]', 'Interpreter',s.interp);
+    finish_axis(ax4, s, 'D', true);
+
+    linkaxes([ax1 ax2 ax3 ax4], 'x');
     xlim(ax1, [ts(1) ts(end)]);
     ylim(ax1, padded_limits(zs, 0.16));
     ylim(ax2, padded_limits(vs, 0.20));
     ylim(ax3, [-3 max(6, max(hs_draw)/65535*100*1.35)]);
+    ylim(ax4, padded_limits(spin(~isnan(spin)), 0.18));
 
-    for ax = [ax1 ax2 ax3]
+    for ax = [ax1 ax2 ax3 ax4]
         tint_span(ax, ts(c.entry), ts(c.exit), s.c_water, 0.12);
     end
     mark_span(ax1, ts(c.entry), ts(c.exit), s.c_water, 'contact', s);
